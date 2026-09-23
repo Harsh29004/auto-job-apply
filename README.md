@@ -1,15 +1,95 @@
 # Naukri Auto Apply Bot
 
-Searches Naukri for AI/ML, Python and web developer jobs, filters them against your resume,
-and applies automatically. It also answers the recruiter chatbot questions.
+Searches Naukri for jobs, filters them against your resume, and applies automatically.
+It also answers the recruiter chatbot questions.
+
+> **This is a generic tool — you need to add your own resume and fill in your personal details before using it.**
 
 ## Setup (one time)
 
-```
+### 1. Install dependencies
+
+```bash
 pip install -r requirements.txt
 python -m playwright install chromium
-copy .env.example .env      # then put NAUKRI_EMAIL / NAUKRI_PASSWORD in .env
 ```
+
+### 2. Add your resume
+
+Place your resume PDF in the project root folder (same folder as `main.py`).
+
+```
+your_resume.pdf      ← your actual resume file
+```
+
+Then update the filename in `config.yaml`:
+
+```yaml
+company_apply:
+  resume_pdf: your_resume.pdf    # ← change this to your resume filename
+```
+
+> ⚠️ Resume files (`.pdf`, `.docx`) are listed in `.gitignore` and will **not** be pushed to GitHub. Your resume stays local.
+
+### 3. Set up credentials
+
+```bash
+copy .env.example .env
+```
+
+Open `.env` and fill in:
+
+```env
+NAUKRI_EMAIL=your_naukri_email@example.com
+NAUKRI_PASSWORD=your_naukri_password
+```
+
+For company-site email applications (optional):
+
+```env
+SMTP_EMAIL=your_gmail@gmail.com
+SMTP_APP_PASSWORD=xxxx xxxx xxxx xxxx   # Google Account > Security > App passwords
+```
+
+### 4. Fill in your profile in `config.yaml`
+
+Open `config.yaml` and update the **`profile`** section with your own details:
+
+```yaml
+profile:
+  name: Your Full Name
+  email: your_email@example.com
+  phone: "9999999999"
+  current_location: Your City
+  preferred_location: Anywhere in India / Remote
+  total_experience_years: 0
+  total_experience_months: 0
+  current_company: ""
+  current_designation: ""
+  notice_period: Immediate
+  current_ctc_lpa: ""          # e.g. 2.4 (CTC questions are skipped while empty)
+  expected_ctc_lpa: ""         # e.g. 4
+  highest_qualification: B.Tech
+  degree_branch: Your Branch
+  college: Your College
+  graduation_year: "2025"
+  about_me: A short one-line summary about yourself (max ~100 characters)
+  project_summary: A short description of your best project
+  why_join: Why you want to join (max ~100 characters)
+```
+
+Also update the **`cover_letter`** under `company_apply` with your own details.
+
+### 5. Customize job search (optional)
+
+Edit the following sections in `config.yaml` or override them in `.env`:
+
+- **`search.keywords`** — job search terms
+- **`skills`** — your skills from your resume (used for job scoring and answering skill questions)
+- **`filters.title_include`** — job titles you're interested in
+- **`filters.title_exclude`** — job titles to skip (senior, lead, java, etc.)
+- **`filters.max_min_experience`** — skip jobs requiring more experience than this
+- **`custom_answers`** — extra answers for recruiter questions
 
 ## Usage
 
@@ -85,9 +165,28 @@ The bot takes one of three routes for each job:
   - pages listing many openings
   - a dropdown that has no correct option
 
-## Files
+## Project structure
 
-- `config.yaml`: keywords, filters, skills and your answers
-- `.env`: your Naukri login (keep it private)
-- `browser_profile/`: the saved login session
-- `data/`: the database, CSV export, daily logs, and `debug/` screenshots of failures
+| File / Folder | Purpose |
+|---|---|
+| `config.yaml` | Keywords, filters, skills, and your profile answers |
+| `.env` | Your Naukri login & SMTP credentials (keep it private, never commit) |
+| `.env.example` | Template for `.env` |
+| `main.py` | Main bot entry point |
+| `company_apply.py` | Company-site apply bot |
+| `run_bot.bat` | Windows shortcut to run the bot |
+| `naukri_bot/` | Core bot modules (search, filter, apply, answer engine) |
+| `tests/` | Test suite |
+| `browser_profile/` | Saved login session (auto-created, gitignored) |
+| `data/` | Database, CSV exports, logs, debug screenshots (gitignored) |
+
+## Important notes
+
+- **Your resume (`.pdf` / `.docx`) must be placed in the project root.** It is gitignored and will not be pushed to GitHub.
+- **Your `.env` file contains passwords.** It is gitignored. Never commit it.
+- **`config.yaml` contains your personal profile.** Edit it with your own details before running the bot.
+- Run `--dry-run` first to verify your filters before actually applying.
+
+## License
+
+MIT
