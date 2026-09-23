@@ -1,5 +1,7 @@
 # Naukri Auto Apply Bot - configuration
 # Credentials go in .env (NAUKRI_EMAIL / NAUKRI_PASSWORD), never here.
+# NOTE: job roles / keywords / title filters / experience are set in .env (JOB_KEYWORDS, JOB_TITLE_INCLUDE,
+# JOB_TITLE_EXCLUDE, ...). Values in .env override the same settings below.
 
 search:
   # Every keyword is searched separately on Naukri.
