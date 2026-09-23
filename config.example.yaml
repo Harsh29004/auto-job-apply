@@ -139,6 +139,12 @@ profile:
   current_location: Your City
   preferred_location: Anywhere in India / Remote
   willing_to_relocate: "Yes"
+  # Countries where you can work without a visa. Used for "authorized to work in X?" and
+  # "need visa sponsorship?" questions (a job abroad -> needs sponsorship = Yes).
+  work_authorized_countries: [India]
+  shift_preference: Flexible - comfortable with any shift or time zone
+  # answer for "On a scale of 1-10, rate your ..." questions
+  self_rating: 7
   total_experience_years: 0
   total_experience_months: 0
   current_company: ""

@@ -171,6 +171,37 @@ The bot takes one of three routes for each job:
   - pages listing many openings
   - a dropdown that has no correct option
 
+## LinkedIn Easy Apply (`linkedin_apply.py`)
+
+Add your LinkedIn login to `.env` (`LINKEDIN_EMAIL`, `LINKEDIN_PASSWORD`). All search settings are also in `.env` (`LINKEDIN_*`).
+
+| Command | What it does |
+|---|---|
+| `python linkedin_apply.py --login` | Log in once. If LinkedIn asks for a code or captcha, complete it in the browser window. |
+| `python linkedin_apply.py --dry-run --max 3` | Fill the Easy Apply dialogs, then discard them. Nothing is submitted. |
+| `python linkedin_apply.py --max 5` | Apply to at most 5 jobs (default `LINKEDIN_MAX_APPLIES`) |
+| `python linkedin_apply.py --report` | Export `data/linkedin_jobs.csv` and list the questions the bot could not answer |
+
+- The bot uses the same title, experience and skill filters as the Naukri bot. It also skips jobs whose description says unpaid or no stipend.
+- The Easy Apply dialog is filled with the same answer engine, and your resume already saved on LinkedIn is reused.
+- An application counts only when LinkedIn shows "application was sent". If Submit was clicked but no confirmation appeared, the job is marked `unconfirmed`. That still counts toward the limit and is never retried.
+- Keep `LINKEDIN_MAX_APPLIES` low (about 15). LinkedIn restricts accounts that apply too fast.
+
+## Remote and foreign jobs
+
+| `.env` setting | Effect |
+|---|---|
+| `JOB_REMOTE_FIRST=true` | Naukri searches remote / work-from-home jobs first (`wfhType=2`) and applies to remote jobs before others |
+| `LINKEDIN_WORK_TYPE=2` | LinkedIn remote-only filter (`1` on-site, `2` remote, `3` hybrid; comma-separated, empty = all) |
+| `LINKEDIN_LOCATIONS=Worldwide, United States, …` | Search foreign markets as well as India |
+
+The answer engine handles foreign jobs as follows:
+- It answers "Are you authorized to work in X?" and "Do you need visa sponsorship?" from `profile.work_authorized_countries`. If the question names no country, it uses the job's country.
+  - For a US job it answers "authorized: No" and "needs sponsorship: Yes".
+  - It never claims work rights you don't have.
+- For shift, time-zone and work-mode questions, it answers from `profile.shift_preference`. By default that is flexible (any shift), with remote preferred.
+- It answers "Rate yourself 1–10" questions with `profile.self_rating`.
+
 ## Project structure
 
 | File / Folder | Purpose |
@@ -181,6 +212,7 @@ The bot takes one of three routes for each job:
 | `.env` | Your Naukri login & SMTP credentials (gitignored, never pushed) |
 | `main.py` | Main bot entry point |
 | `company_apply.py` | Company-site apply bot |
+| `linkedin_apply.py` | LinkedIn Easy Apply bot |
 | `run_bot.bat` | Windows shortcut to run the bot |
 | `naukri_bot/` | Core bot modules (search, filter, apply, answer engine) |
 | `tests/` | Test suite |

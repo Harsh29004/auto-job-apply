@@ -103,3 +103,41 @@ def test_parse_range(opt, lo, hi):
 def test_pick_numeric_nearest():
     assert pick_numeric_option(1, ["2-4 years", "5+ years"]) == "2-4 years"
     assert pick_numeric_option(4, ["1", "2", "3", "4", "5"]) == "4"
+
+
+@pytest.mark.parametrize("question,options,job_location,expected", [
+    ("Are you legally authorized to work in the United States?", ["Yes", "No"], "", "No"),
+    ("Are you legally authorized to work in India?", ["Yes", "No"], "", "Yes"),
+    ("Do you require visa sponsorship to work in India?", ["Yes", "No"], "", "No"),
+    ("Will you now or in the future require sponsorship for employment visa status?", ["Yes", "No"],
+     "New York, United States (Remote)", "Yes"),
+    ("Will you now or in the future require sponsorship for employment visa status?", ["Yes", "No"],
+     "Bengaluru, Karnataka, India", "No"),
+    ("Are you authorized to work in the country where this job is located?", ["Yes", "No"], "London, United Kingdom", "No"),
+    ("Are you authorized to work in the country where this job is located?", ["Yes", "No"], "Pune, India", "Yes"),
+    ("Please let us know if you need a visa", ["Yes", "No"], "", "No"),
+])
+def test_work_authorization(cfg, question, options, job_location, expected):
+    a = Answerer(dict(cfg.profile, work_authorized_countries=["India"]), cfg.skills)
+    a.job_location = job_location
+    assert a.answer(question, options) == expected
+
+
+@pytest.mark.parametrize("question,options,expected", [
+    ("Are you comfortable working in night shift?", ["Yes", "No"], "Yes"),
+    ("Are you okay with rotational shifts?", ["Yes", "No"], "Yes"),
+    ("Which shift do you prefer?", ["Day", "Night", "Rotational"], "Rotational"),
+    ("Which shift do you prefer?", ["Day", "Night", "Any"], "Any"),
+    ("What is your preferred work mode?", ["Onsite", "Hybrid", "Remote"], "Remote"),
+])
+def test_flexible_shift_and_remote(answerer, question, options, expected):
+    assert answerer.answer(question, options) == expected
+
+
+def test_shift_text_answer(answerer):
+    assert "flexible" in answerer.answer("Are you comfortable working in US time zone (EST)?").lower()
+
+
+def test_self_rating(answerer):
+    assert answerer.answer("From 1–10, how would you rate your current AI/ML knowledge?") == "7"
+    assert answerer.answer("On a scale of 1 to 10, rate your Python skills", ["5", "6", "7", "8"]) == "7"

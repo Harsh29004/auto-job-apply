@@ -79,6 +79,7 @@ class Answerer:
         self.skills = [s.lower() for s in skills]
         self.skill_exp = {str(k).lower(): v for k, v in (self.p.get("skill_experience") or {}).items()}
         self.custom = {str(k).lower(): v for k, v in (custom_answers or {}).items()}
+        self.job_location = ""  # set per job by the bots (used for visa / work-authorization questions)
 
     # ------------------------------------------------------------------ public
     def answer(self, question: str, options: list[str] | None = None):
@@ -186,8 +187,58 @@ class Answerer:
         if re.search(r"(are you )?currently (working|employed)", q):
             return YES
 
+        # --- self ratings ("From 1-10, how would you rate ...") --------------
+        if re.search(r"(1|one)\s*(-|–|to|/)\s*(10|ten)\b|scale of|out of (10|ten)|rate (your|yourself)", q):
+            return str(p.get("self_rating", 7))
+
+        # --- work authorization / visa (depends on the job's country) --------
+        auth = self._work_authorization(q)
+        if auth is not None:
+            return auth
+
+        # --- shifts, time zones, work mode (candidate is flexible) ---------
+        if re.search(r"\bshifts?\b|time ?zones?|working hours|work(ing)? timings?|\b(est|pst|cst|gmt|uk|us) (hours|time)", q):
+            if not options or not any(norm(o) in ("yes", "no") for o in options):
+                if options:
+                    for want in (r"\bany\b|flexible|\ball\b", r"rotational", r"night|\bus\b|\buk\b"):
+                        hit = next((o for o in options if re.search(want, o, re.I)), None)
+                        if hit:
+                            return hit
+                    return None
+                return p.get("shift_preference") or "Flexible - comfortable with any shift or time zone"
+        if options and re.search(r"work (mode|arrangement|model|setup|location type)|prefer(red)? (work|working)|"
+                                 r"remote.*(hybrid|onsite|office)|(onsite|office|hybrid).*remote", q):
+            for want in (r"remote|work from home|wfh", r"any|flexible|open"):
+                hit = next((o for o in options if re.search(want, o, re.I)), None)
+                if hit:
+                    return hit
+
         # --- yes / no ------------------------------------------------------
         return self._yes_no(q, options)
+
+    COUNTRY_RE = re.compile(
+        r"\b(united states|usa|u\.s\.a?\.?|us|america|canada|united kingdom|uk|britain|england|europe|eu|germany|"
+        r"netherlands|ireland|france|spain|poland|australia|new zealand|singapore|uae|dubai|saudi|qatar|japan|"
+        r"switzerland|sweden|india)\b", re.I)
+
+    def _work_authorization(self, q: str):
+        """Honest answers for 'authorized to work in X?' / 'need visa sponsorship?'."""
+        sponsor = re.search(r"sponsor|visa|work permit|h-?1b", q)
+        authorized = re.search(r"authori[sz]ed to work|legally (eligible|authori[sz]ed|able|allowed|permitted)|"
+                               r"eligible to work|right to work|work authori[sz]ation|permitted to work", q)
+        if not (sponsor or authorized):
+            return None
+        allowed = [c.lower() for c in (self.p.get("work_authorized_countries") or ["India"])]
+        found = [m.group(1).lower() for m in self.COUNTRY_RE.finditer(q)]
+        if found == ["us"] and not re.search(r"\b(in|the) us\b", q):
+            found = []  # "let us know" etc.
+        if not found and self.job_location:  # question has no country -> use the job's location
+            found = [m.group(1).lower() for m in self.COUNTRY_RE.finditer(self.job_location)
+                     if m.group(1).lower() != "us" or "united states" in self.job_location.lower()]
+        in_allowed = (not found) or any(c in allowed for c in found)
+        if sponsor:
+            return NO if in_allowed else YES
+        return YES if in_allowed else NO
 
     # ---------------------------------------------------------------- helpers
     def _money(self, lpa, q: str):
@@ -263,7 +314,6 @@ class Answerer:
             r"(applied|interviewed|worked) (with|for|at|in|to) (us|this|our|the company)",
             r"previously (applied|worked|employed|interviewed)",
             r"backlog|arrear|\bgap\b|criminal|convicted|disabilit",
-            r"sponsor|visa|work permit",
             r"(currently )?(pursuing|a student|studying)",
             r"serving notice",
             r"any (other )?offer",

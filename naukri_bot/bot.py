@@ -70,7 +70,12 @@ READ_CHATBOT_JS = r"""
 """
 
 
-def search_url(keyword: str, location: str = "", page_no: int = 1, experience=None, job_age=None) -> str:
+def is_remote(job: Job) -> bool:
+    return bool(re.search(r"remote|work from home|\bwfh\b|anywhere", job.location + " " + job.title, re.I))
+
+
+def search_url(keyword: str, location: str = "", page_no: int = 1, experience=None, job_age=None,
+               remote: bool = False) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", keyword.lower()).strip("-") + "-jobs"
     if location:
         slug += "-in-" + re.sub(r"[^a-z0-9]+", "-", location.lower()).strip("-")
@@ -83,6 +88,8 @@ def search_url(keyword: str, location: str = "", page_no: int = 1, experience=No
         params.append(f"experience={experience}")
     if job_age:
         params.append(f"jobAge={job_age}")
+    if remote:
+        params.append("wfhType=2")  # Naukri "Remote / Work from home" filter
     return f"{BASE_URL}/{slug}?{'&'.join(params)}"
 
 
@@ -277,9 +284,9 @@ class NaukriBot:
         return False
 
     # --------------------------------------------------------------- search
-    def search(self, keyword: str, location: str = "", page_no: int = 1) -> list[Job]:
+    def search(self, keyword: str, location: str = "", page_no: int = 1, remote: bool = False) -> list[Job]:
         s = self.cfg.search
-        url = search_url(keyword, location, page_no, s.get("experience_years"), s.get("job_age_days"))
+        url = search_url(keyword, location, page_no, s.get("experience_years"), s.get("job_age_days"), remote)
         try:
             with self.page.expect_response(lambda r: "jobapi/v3/search" in r.url, timeout=30000) as resp_info:
                 self.page.goto(url, wait_until="domcontentloaded")
@@ -288,7 +295,7 @@ class NaukriBot:
             log.warning("Search failed for '%s' %s p%s: %s", keyword, location, page_no, e)
             return []
         jobs = [Job.from_api(d) for d in data.get("jobDetails") or [] if d.get("jobId")]
-        log.info("Search '%s'%s page %d -> %d jobs (total %s)", keyword,
+        log.info("Search '%s'%s%s page %d -> %d jobs (total %s)", keyword, " [remote]" if remote else "",
                  f" in {location}" if location else "", page_no, len(jobs), data.get("noOfJobs"))
         return jobs
 
@@ -298,30 +305,33 @@ class NaukriBot:
         locations = s.get("locations") or [""]
         found: dict[str, tuple[Job, int, str]] = {}
         new_external = 0
-        for kw in s["keywords"]:
-            for loc in locations:
-                for page_no in range(1, int(s.get("pages_per_search", 1)) + 1):
-                    jobs = self.search(kw, loc, page_no)
-                    for job in jobs:
-                        if job.job_id in found or self.db.is_done(job.job_id):
-                            continue
-                        if job.external:
-                            ok, reason, score = evaluate(job, self.cfg.filters, self.cfg.skills, allow_external=True)
-                            if ok and self.db.save_external(job, score):
-                                new_external += 1
-                            self.db.record(job, "external", "company site" + ("" if ok else f" ({reason})"), score)
-                            continue
-                        ok, reason, score = evaluate(job, self.cfg.filters, self.cfg.skills)
-                        if ok:
-                            found[job.job_id] = (job, score, reason)
-                        else:
-                            self.db.record(job, "skipped", reason, score)
-                    self.pause(1.5, 3.5)
-                    if len(jobs) < 20:
-                        break
+        modes = [True, False] if s.get("remote_first") else [False]
+        searches = [(kw, loc, remote) for remote in modes for kw in s["keywords"]
+                    for loc in (locations if not remote else [""])]
+        for kw, loc, remote in searches:
+            for page_no in range(1, int(s.get("pages_per_search", 1)) + 1):
+                jobs = self.search(kw, loc, page_no, remote)
+                for job in jobs:
+                    if job.job_id in found or self.db.is_done(job.job_id):
+                        continue
+                    if job.external:
+                        ok, reason, score = evaluate(job, self.cfg.filters, self.cfg.skills, allow_external=True)
+                        if ok and self.db.save_external(job, score):
+                            new_external += 1
+                        self.db.record(job, "external", "company site" + ("" if ok else f" ({reason})"), score)
+                        continue
+                    ok, reason, score = evaluate(job, self.cfg.filters, self.cfg.skills)
+                    if ok:
+                        found[job.job_id] = (job, score, reason)
+                    else:
+                        self.db.record(job, "skipped", reason, score)
+                self.pause(1.5, 3.5)
+                if len(jobs) < 20:
+                    break
         # Same posting is often listed once per city - keep one per (title, company).
         ranked, seen = [], set()
-        for item in sorted(found.values(), key=lambda t: t[1], reverse=True):
+        # remote jobs first, then by relevance score
+        for item in sorted(found.values(), key=lambda t: (is_remote(t[0]), t[1]), reverse=True):
             key = (item[0].title.lower().strip(), item[0].company.lower().strip())
             if key not in seen:
                 seen.add(key)

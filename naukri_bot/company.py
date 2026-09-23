@@ -41,7 +41,14 @@ EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 # Collects every fillable field in a frame and tags it with data-nb-idx so Python can find it again.
 SCAN_JS = r"""
-() => {
+(rootSel) => {
+  const deep = (sel, r = document) => {  // querySelector that also looks inside open shadow roots
+    const hit = r.querySelector(sel);
+    if (hit) return hit;
+    for (const el of r.querySelectorAll('*')) if (el.shadowRoot) { const x = deep(sel, el.shadowRoot); if (x) return x; }
+    return null;
+  };
+  const root = (rootSel && deep(rootSel)) || document;
   const vis = e => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length)) &&
                    getComputedStyle(e).visibility !== 'hidden';
   const clean = t => (t || '').replace(/\s+/g, ' ').trim();
@@ -49,7 +56,7 @@ SCAN_JS = r"""
     let t = '';
     if (e.labels && e.labels.length) t = [...e.labels].map(l => l.innerText).join(' ');
     if (!t && e.getAttribute('aria-labelledby'))
-      t = e.getAttribute('aria-labelledby').split(' ').map(id => (document.getElementById(id) || {}).innerText || '').join(' ');
+      t = e.getAttribute('aria-labelledby').split(' ').map(id => ((e.getRootNode().getElementById ? e.getRootNode() : document).getElementById(id) || {}).innerText || '').join(' ');
     if (!t) t = e.getAttribute('aria-label') || '';
     if (!t && e.closest('label')) t = e.closest('label').innerText;
     if (!t) t = e.getAttribute('placeholder') || '';
@@ -65,11 +72,13 @@ SCAN_JS = r"""
   const out = [];
   let idx = 0;
   const groups = {};
-  const els = [...document.querySelectorAll('input, textarea, select')];
+  const els = [...root.querySelectorAll('input, textarea, select')];
   for (const e of els) {
     const type = (e.getAttribute('type') || e.tagName).toLowerCase();
     if (['hidden', 'submit', 'button', 'image', 'reset', 'search'].includes(type)) continue;
-    if (type !== 'file' && (!vis(e) || e.disabled)) continue;
+    const choice = type === 'radio' || type === 'checkbox';
+    const labelVisible = choice && ((e.labels && e.labels[0] && vis(e.labels[0])) || vis(e.parentElement));
+    if (type !== 'file' && ((!vis(e) && !labelVisible) || e.disabled)) continue;
     const combo = e.readOnly && e.tagName === 'INPUT';
     if (e.readOnly && !combo) continue;
     if (type === 'file' && e.disabled) continue;
@@ -108,7 +117,7 @@ SCAN_JS = r"""
     }
     idx++;
   }
-  for (const e of document.querySelectorAll('[role=combobox]:not(input), [aria-haspopup=listbox]:not(input)')) {
+  for (const e of root.querySelectorAll('[role=combobox]:not(input), [aria-haspopup=listbox]:not(input)')) {
     if (!vis(e) || e.querySelector('input:not([type=hidden])')) continue;
     e.setAttribute('data-nb-idx', String(idx));
     const lab = labelOf(e);
@@ -127,9 +136,12 @@ OPEN_OPTIONS_JS = r"""
   const vis = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
   const sel = "[role=option], [role=listbox] li, ul[class*=dropdown] li, ul[class*=menu] li, ul[class*=list] li, " +
               "div[class*=option]:not([class*=options]), li[class*=option], .dropdown-item, mat-option";
+  const roots = [document];
+  for (let k = 0; k < roots.length; k++)
+    for (const el of roots[k].querySelectorAll('*')) if (el.shadowRoot) roots.push(el.shadowRoot);
   let i = 0;
   const out = [];
-  for (const e of document.querySelectorAll(sel)) {
+  for (const e of roots.flatMap(r => [...r.querySelectorAll(sel)])) {
     const t = (e.innerText || '').replace(/\s+/g, ' ').trim();
     if (!vis(e) || !t || t.length > 80 || (e.parentElement && e.parentElement.closest(sel))) continue;
     e.setAttribute('data-nb-opt', String(i));
@@ -216,13 +228,11 @@ class FieldFiller:
             (r"how did you (hear|find|come)|source|referr?al source|where did you", self.c.get("heard_about_us")),
             (r"subject", f"Application for {title}"),
             (r"position|job title|role (applied|applying)|applying for|post applied|job opening|opening", "__TITLE__"),
-            (r"primary skills|key skills|skill ?set|technical skills|^skills|skills", ", ".join(
+            (r"primary skills|key skills|skill ?set|technical skills|^skills|\bskills\b", ", ".join(
                 s for s in ["Python", "Machine Learning", "Deep Learning", "TensorFlow", "PyTorch", "OpenCV",
                             "NLP", "SQL", "Flask", "React", "JavaScript"])),
             (r"degree type|highest (educational )?qualification|education level|qualification", p.get("highest_qualification")),
             (r"previously (worked|employed|applied)|worked (with|for) us (before)?|ex-?employee", "No"),
-            (r"legally (eligible|authori[sz]ed)|eligible to work|work authori[sz]ation", "Yes"),
-            (r"sponsorship|visa", "No"),
             (r"gender", p.get("gender") or "__PREFER_NOT__"),
             (r"current (company|employer|organi[sz]ation)|company name|employer", p.get("current_company")),
             (r"current (designation|title|role|position)|designation", p.get("current_designation")),
@@ -511,10 +521,14 @@ class CompanyApplier:
             idx = (f.get("optionIdx") or [f["idx"]])[0]
             try:
                 ok = frame.evaluate(
-                    """(i) => { const e = document.querySelector(`[data-nb-idx="${i}"]`);
+                    """(i) => {
+                       const roots = [document];
+                       for (let k = 0; k < roots.length; k++)
+                         for (const el of roots[k].querySelectorAll('*')) if (el.shadowRoot) roots.push(el.shadowRoot);
+                       const e = roots.map(r => r.querySelector(`[data-nb-idx="${i}"]`)).find(Boolean);
                        if (!e) return false;
                        if (e.type === 'radio' || e.type === 'checkbox')
-                         return !!document.querySelector(`input[name="${CSS.escape(e.name)}"]:checked`);
+                         return !!e.getRootNode().querySelector(`input[name="${CSS.escape(e.name)}"]:checked`);
                        if (e.getAttribute('aria-invalid') === 'true') return false;
                        const v = (e.value !== undefined ? e.value : e.innerText) || '';
                        if (e.type === 'file') return e.files && e.files.length > 0;
@@ -565,6 +579,11 @@ class CompanyApplier:
                             missing.append(label)
                         continue
                     loc.fill(str(value))
+                    if loc.get_attribute("role") == "combobox" or loc.get_attribute("aria-autocomplete"):
+                        frame.page.wait_for_timeout(1500)  # typeahead (e.g. city): take the first suggestion
+                        opts = frame.page.locator("[role=listbox] [role=option], .basic-typeahead__selectable")
+                        if opts.count() and opts.first.is_visible():
+                            opts.first.click()
                 log.info("   %s = %s", label[:50], str(value)[:60].replace("\n", " "))
             except PWError as e:
                 log.info("   could not fill '%s': %s", label, str(e).splitlines()[0][:80])
@@ -618,12 +637,25 @@ class CompanyApplier:
                 pass
         page.wait_for_timeout(300)
 
+    @staticmethod
+    def _check(loc):
+        """Tick a radio/checkbox even when the real input is hidden behind a styled label."""
+        try:
+            loc.check(force=True, timeout=3000)
+            return
+        except PWError:
+            pass
+        if not loc.evaluate("e => e.checked"):
+            loc.evaluate("e => { (e.labels && e.labels[0] ? e.labels[0] : e).click(); }")
+        if not loc.evaluate("e => e.checked"):
+            loc.evaluate("e => e.click()")
+
     def _fill_choice(self, frame: Frame, f: dict, missing: list[str]):
         label, options = f.get("label", ""), f.get("options") or []
         if f["type"] == "checkbox" and len(options) == 1:
             text = (label + " " + options[0]).lower()
             if re.search(r"agree|consent|terms|privacy|accept|authori[sz]e|confirm|declare|acknowledge", text):
-                frame.locator(f"[data-nb-idx='{f['optionIdx'][0]}']").check(force=True)
+                self._check(frame.locator(f"[data-nb-idx='{f['optionIdx'][0]}']"))
                 log.info("   [x] %s", options[0][:60])
             elif f["required"]:
                 missing.append(label[:80])
@@ -634,7 +666,7 @@ class CompanyApplier:
                 missing.append(label[:80])
             return
         i = options.index(choice)
-        frame.locator(f"[data-nb-idx='{f['optionIdx'][i]}']").check(force=True)
+        self._check(frame.locator(f"[data-nb-idx='{f['optionIdx'][i]}']"))
         log.info("   %s -> %s", label[:50], choice)
 
     def click_submit(self, frame: Frame) -> str | None:

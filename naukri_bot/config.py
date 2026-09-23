@@ -20,6 +20,7 @@ class Config:
     profile: dict
     custom_answers: dict = field(default_factory=dict)
     company_apply: dict = field(default_factory=dict)
+    linkedin: dict = field(default_factory=dict)
     email: str = ""
     password: str = ""
     smtp_email: str = ""
@@ -103,7 +104,10 @@ def load_config(path: str | Path | None = None, env_path: str | Path | None = No
     apply.setdefault("delay_seconds", [4, 9])
     apply.setdefault("headless", False)
 
+    search.setdefault("remote_first", False)
     apply_env_overrides({"search": search, "filters": filters, "apply": apply})
+    if os.getenv("JOB_REMOTE_FIRST") is not None:
+        search["remote_first"] = os.getenv("JOB_REMOTE_FIRST", "").strip().lower() in ("1", "true", "yes")
 
     company = raw.get("company_apply") or {}
     company.setdefault("resume_pdf", "")
@@ -111,6 +115,18 @@ def load_config(path: str | Path | None = None, env_path: str | Path | None = No
     company.setdefault("heard_about_us", "Naukri.com")
     company.setdefault("cover_letter", "")
     company.setdefault("send_emails", True)
+
+    linkedin = {
+        "email": os.getenv("LINKEDIN_EMAIL", "").strip(),
+        "password": os.getenv("LINKEDIN_PASSWORD", "").strip(),
+        "keywords": env_list("LINKEDIN_KEYWORDS") or search["keywords"],
+        "locations": env_list("LINKEDIN_LOCATIONS") or ["India"],
+        "experience_levels": env_list("LINKEDIN_EXPERIENCE_LEVELS") or ["1", "2"],
+        "date_posted": (os.getenv("LINKEDIN_DATE_POSTED") or "r604800").strip(),
+        "work_types": env_list("LINKEDIN_WORK_TYPE") or [],
+        "pages_per_search": env_int("LINKEDIN_PAGES_PER_SEARCH") or 2,
+        "max_applies": env_int("LINKEDIN_MAX_APPLIES") or 15,
+    }
 
     return Config(
         search=search,
@@ -120,6 +136,7 @@ def load_config(path: str | Path | None = None, env_path: str | Path | None = No
         profile=raw.get("profile") or {},
         custom_answers={str(k).lower(): v for k, v in (raw.get("custom_answers") or {}).items()},
         company_apply=company,
+        linkedin=linkedin,
         email=os.getenv("NAUKRI_EMAIL", "").strip(),
         smtp_email=os.getenv("SMTP_EMAIL", "").strip(),
         smtp_password=os.getenv("SMTP_APP_PASSWORD", "").replace(" ", "").strip(),

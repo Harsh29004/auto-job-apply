@@ -78,3 +78,10 @@ def test_storage(tmp_path):
     assert db.unanswered()[0][2] == 2
     assert db.export_csv(tmp_path / "o.csv") == 1
     db.close()
+
+
+def test_search_url_remote():
+    from naukri_bot.bot import is_remote
+    assert search_url("python developer", "", 1, 1, 7, remote=True).endswith("&wfhType=2")
+    assert is_remote(job(placeholders=[{"type": "location", "label": "Remote"}]))
+    assert not is_remote(job())
