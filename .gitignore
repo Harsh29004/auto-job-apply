@@ -1,4 +1,5 @@
 .env
+config.yaml
 browser_profile/
 browser_profile_company/
 data/

@@ -22,16 +22,22 @@ Place your resume PDF in the project root folder (same folder as `main.py`).
 your_resume.pdf      ← your actual resume file
 ```
 
-Then update the filename in `config.yaml`:
+### 3. Set up config
+
+```bash
+copy config.example.yaml config.yaml
+```
+
+Open `config.yaml` and fill in your details. Update the resume filename:
 
 ```yaml
 company_apply:
   resume_pdf: your_resume.pdf    # ← change this to your resume filename
 ```
 
-> ⚠️ Resume files (`.pdf`, `.docx`) are listed in `.gitignore` and will **not** be pushed to GitHub. Your resume stays local.
+> ⚠️ `config.yaml` is gitignored — your personal data will **not** be pushed to GitHub.
 
-### 3. Set up credentials
+### 4. Set up credentials
 
 ```bash
 copy .env.example .env
@@ -51,7 +57,7 @@ SMTP_EMAIL=your_gmail@gmail.com
 SMTP_APP_PASSWORD=xxxx xxxx xxxx xxxx   # Google Account > Security > App passwords
 ```
 
-### 4. Fill in your profile in `config.yaml`
+### 5. Fill in your profile in `config.yaml`
 
 Open `config.yaml` and update the **`profile`** section with your own details:
 
@@ -80,7 +86,7 @@ profile:
 
 Also update the **`cover_letter`** under `company_apply` with your own details.
 
-### 5. Customize job search (optional)
+### 6. Customize job search (optional)
 
 Edit the following sections in `config.yaml` or override them in `.env`:
 
@@ -169,9 +175,10 @@ The bot takes one of three routes for each job:
 
 | File / Folder | Purpose |
 |---|---|
-| `config.yaml` | Keywords, filters, skills, and your profile answers |
-| `.env` | Your Naukri login & SMTP credentials (keep it private, never commit) |
+| `config.example.yaml` | Template config — copy to `config.yaml` and fill in your details |
+| `config.yaml` | Your personal config (gitignored, never pushed) |
 | `.env.example` | Template for `.env` |
+| `.env` | Your Naukri login & SMTP credentials (gitignored, never pushed) |
 | `main.py` | Main bot entry point |
 | `company_apply.py` | Company-site apply bot |
 | `run_bot.bat` | Windows shortcut to run the bot |
@@ -182,9 +189,10 @@ The bot takes one of three routes for each job:
 
 ## Important notes
 
+- **Copy `config.example.yaml` to `config.yaml`** and fill in your own details before running.
 - **Your resume (`.pdf` / `.docx`) must be placed in the project root.** It is gitignored and will not be pushed to GitHub.
 - **Your `.env` file contains passwords.** It is gitignored. Never commit it.
-- **`config.yaml` contains your personal profile.** Edit it with your own details before running the bot.
+- **`config.yaml` contains your personal profile.** It is gitignored. Never commit it.
 - Run `--dry-run` first to verify your filters before actually applying.
 
 ## License

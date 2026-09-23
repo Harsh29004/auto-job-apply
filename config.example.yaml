@@ -1,4 +1,7 @@
 # Naukri Auto Apply Bot - configuration
+# Copy this file to config.yaml and fill in your details:
+#   copy config.example.yaml config.yaml
+#
 # Credentials go in .env (NAUKRI_EMAIL / NAUKRI_PASSWORD), never here.
 # NOTE: job roles / keywords / title filters / experience are set in .env (JOB_KEYWORDS, JOB_TITLE_INCLUDE,
 # JOB_TITLE_EXCLUDE, ...). Values in .env override the same settings below.
@@ -22,7 +25,7 @@ search:
   # Empty list = all over India / anywhere (no location filter).
   # Add city names to also run city-specific searches, e.g. [bangalore, pune, ahmedabad, surat]
   locations: []
-  experience_years: 1        # Naukri "experience" filter
+  experience_years: 0        # Naukri "experience" filter
   job_age_days: 7            # only jobs posted in the last N days (1, 3, 7, 15, 30)
   pages_per_search: 2        # 20 jobs per page
 
@@ -104,111 +107,92 @@ filters:
 
 # Your skills (from resume) - used to score job relevance and to answer
 # "how many years of experience in X" questions.
+# ⚠️ Replace these with YOUR skills from YOUR resume.
 skills:
   - python
   - machine learning
   - deep learning
   - nlp
-  - natural language processing
-  - computer vision
   - tensorflow
-  - keras
   - pytorch
   - scikit-learn
-  - sklearn
-  - opencv
-  - numpy
-  - pandas
-  - matplotlib
-  - seaborn
-  - xgboost
-  - cnn
-  - transformer
-  - mediapipe
   - sql
-  - c
   - html
   - css
   - javascript
   - react
-  - vite
   - flask
-  - rest api
-  - api
   - git
   - data analysis
-  - data science
-  - artificial intelligence
-  - ai
-  - ml
 
 apply:
   max_applies_per_run: 25    # Naukri allows ~50 applies per day
   delay_seconds: [4, 9]      # random wait between jobs
   headless: false
 
+# ⚠️ FILL IN YOUR OWN DETAILS BELOW
 # Answers for recruiter questions asked in the Naukri apply chatbot.
 profile:
-  name: Harshkumar Rajubhai Panchal
-  email: harshpanchal2904@gmail.com
-  phone: "9727309697"
-  current_location: Surat
+  name: Your Full Name
+  email: your_email@example.com
+  phone: "9999999999"
+  current_location: Your City
   preferred_location: Anywhere in India / Remote
   willing_to_relocate: "Yes"
-  total_experience_years: 1          # 6 month internship + current job
-  total_experience_months: 8
-  current_company: LogicGo Infotech
-  current_designation: Trainee / Junior Developer
+  total_experience_years: 0
+  total_experience_months: 0
+  current_company: ""
+  current_designation: ""
   notice_period: Immediate
   notice_period_days: 0
-  current_ctc_lpa: ""                # TODO fill, e.g. 2.4  (questions about CTC are skipped while empty)
-  expected_ctc_lpa: ""               # TODO fill, e.g. 4
+  current_ctc_lpa: ""                # fill in, e.g. 2.4  (questions about CTC are skipped while empty)
+  expected_ctc_lpa: ""               # fill in, e.g. 4
   highest_qualification: B.Tech
-  degree_branch: Artificial Intelligence and Data Science
-  college: SCET Surat
-  graduation_year: "2026"
-  cgpa: ""                           # TODO fill if you want CGPA/percentage questions answered
-  twelfth_percentage: "60"
-  tenth_percentage: "74.17"
+  degree_branch: Your Branch
+  college: Your College
+  graduation_year: "2025"
+  cgpa: ""                           # fill if you want CGPA/percentage questions answered
+  twelfth_percentage: ""
+  tenth_percentage: ""
   gender: ""                         # optional
   date_of_birth: ""                  # optional, DD/MM/YYYY
   linkedin: ""
   github: ""
-  languages: English, Hindi, Gujarati
+  languages: English, Hindi
   # Years of experience answered for skills listed above that are NOT in skill_experience
-  default_skill_experience: 1
+  default_skill_experience: 0
   # Years answered for skills you don't have
   unknown_skill_experience: 0
   skill_experience: {}               # e.g. {python: 1, react: 1}
   # Free-text answers for open questions. Naukri allows only ~100 characters per text answer
   # (longer ones are auto-shortened by the bot). Set to "" to skip such jobs instead.
-  about_me: AI/ML engineer, B.Tech AI & DS 2026, Junior Dev at LogicGo Infotech, ex-SVNIT research intern.
-  project_summary: Real-time Indian Sign Language video-to-text system using MediaPipe and a custom Transformer.
-  why_join: Want to apply my ML, deep learning and Python skills to real products; can join immediately.
+  about_me: ""                       # e.g. "AI/ML engineer, B.Tech CS 2025, 1 year experience in Python/ML."
+  project_summary: ""                # e.g. "Built a real-time object detection system using YOLOv8 and OpenCV."
+  why_join: ""                       # e.g. "Want to apply my ML skills to real products; can join immediately."
 
 # Company-site bot (company_apply.py)
 company_apply:
-  resume_pdf: Harshkumar_Panchal_Resume.pdf
+  resume_pdf: your_resume.pdf        # ← put your resume PDF in the project root and update this filename
   max_per_run: 15
   heard_about_us: Naukri.com
   # used for "cover letter / message" boxes on company forms and for email applications
+  # ⚠️ Replace with YOUR cover letter
   cover_letter: |-
     Dear Hiring Team,
 
-    I am applying for the {title} role at {company}. I am a 2026 B.Tech (AI & Data Science) graduate from
-    SCET Surat, currently working as a Trainee / Junior Developer at LogicGo Infotech. During my 6-month
-    research internship at SVNIT Surat I built a real-time Indian Sign Language video-to-text system using
-    MediaPipe and a custom spatial-temporal Transformer. I have also built CNN models (forest fire detection,
-    diabetic retinopathy detection) and Flask/React web apps.
+    I am applying for the {title} role at {company}. I am a [year] [degree] graduate from
+    [your college], currently working as [your role] at [your company].
 
-    I work with Python, TensorFlow, PyTorch, OpenCV, scikit-learn, Flask and React, and I can join immediately.
+    [Briefly describe your key project or achievement in 1-2 sentences.]
+
+    I work with [your key skills], and I can join [your notice period].
     My resume is attached. Thank you for your time.
 
     Regards,
-    Harshkumar Panchal
-    +91 9727309697 | harshpanchal2904@gmail.com
+    [Your Name]
+    [Your Phone] | [Your Email]
   # Email applications ("send your resume to hr@...") need a Gmail App Password in .env:
-  #   SMTP_EMAIL=harshpanchal2904@gmail.com
+  #   SMTP_EMAIL=your_gmail@gmail.com
   #   SMTP_APP_PASSWORD=xxxx xxxx xxxx xxxx   (Google Account > Security > App passwords)
   # Without it those jobs are listed as manual.
   send_emails: true
