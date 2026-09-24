@@ -83,7 +83,7 @@ def server():
 def applier(cfg, tmp_path):
     db = Storage(tmp_path / "t.db")
     safe = dataclasses.replace(cfg, smtp_email="", smtp_password="")  # never send real email from tests
-    with CompanyApplier(safe, db, submit=True, headless=True) as bot:
+    with CompanyApplier(safe, db, submit=True, headless=True, profile_dir=tmp_path / "profile") as bot:
         yield bot
 
 
@@ -99,14 +99,15 @@ def test_form_flow_submits(applier, server):
     assert sub["email"] == "harshpanchal2904@gmail.com" and sub["phone"] == "9727309697"
     assert sub["experience"] == "1-2 years" and sub["reloc"] == "y"
     assert sub["notice"] == "Immediate" and sub["source"] == "Naukri.com"
-    assert sub["resume"] == "Harshkumar_Panchal_Resume.pdf" and sub["consent"] == "on"
+    assert sub["resume"].endswith("_Resume.pdf") and sub["consent"] == "on"  # tailored copy, neutral name
     assert "AI/ML Engineer" in sub["cover"]
     assert sub["position"] == "AI/ML Engineer"          # title-matched <select>
     assert sub["qualification"] == "B.Tech/B.E."        # custom (non-select) dropdown
 
 
 def test_no_submit_mode(cfg, tmp_path, server):
-    with CompanyApplier(cfg, Storage(tmp_path / "t.db"), submit=False, headless=True) as bot:
+    with CompanyApplier(cfg, Storage(tmp_path / "t.db"), submit=False, headless=True,
+                        profile_dir=tmp_path / "profile") as bot:
         status, _ = bot.apply_job(job(server + "/form.html"))
         assert status == "filled"
         assert bot.page.evaluate("localStorage.getItem('submitted')") is None or "Thank you" not in bot.body_text()
@@ -130,3 +131,32 @@ def test_whatsapp_is_manual(applier, server):
 def test_login_ats_is_manual(applier):
     status, detail = applier.apply_job(job("https://cisco.wd5.myworkdayjobs.com/en-US/x"))
     assert status == "manual" and "workday" in detail
+
+
+def test_google_form_flow(applier, server):
+    status, detail = applier.apply_job(job(server + "/gform.html?docs.google.com/forms", "Python Developer"))
+    assert status == "applied", detail
+    ans = applier.page.evaluate("JSON.parse(localStorage.getItem('gform'))")
+    assert ans["name"] == "Harshkumar Rajubhai Panchal" and ans["email"] == "harshpanchal2904@gmail.com"
+    assert ans["pyexp"] == "0-1 years"               # 1 year of Python -> first range containing 1
+    assert ans["skills"] == ["Python", "React"]      # only skills on the resume are ticked
+    assert ans["notice"] == "Immediate"
+    assert "Python Developer" in ans["why"]          # cover letter mentions the role
+    assert ans["linkedin"].startswith("https://www.linkedin.com/in/")
+
+
+def test_google_form_no_submit(cfg, tmp_path, server):
+    with CompanyApplier(cfg, Storage(tmp_path / "t.db"), submit=False, headless=True,
+                        profile_dir=tmp_path / "profile") as bot:
+        status, detail = bot.apply_job(job(server + "/gform.html?docs.google.com/forms", "Python Developer"))
+        assert status == "filled", detail
+        assert bot.page.evaluate("localStorage.getItem('gform')") is None
+
+
+def test_tailored_resume_is_uploaded(applier, server):
+    status, _ = applier.apply_job(job(server + "/job.html", "Generative AI Engineer"))
+    assert status == "applied"
+    variants = {p.stem for p in (applier.cfg.root / "resumes").glob("*.pdf")}
+    if "genai_llm_engineer" in variants:  # resumes built with build_resumes.py
+        assert applier.resume.parent.name == "genai_llm_engineer"
+    assert applier.resume.exists()

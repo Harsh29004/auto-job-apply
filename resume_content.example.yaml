@@ -1,0 +1,360 @@
+# Example resume content. Copy to resumes/content.yaml, replace everything with your own details,
+# then run:  python build_resumes.py
+# The experience keys (logicgo / svnit) are just ids - keep them or rename them in build_resumes.py.
+
+header:
+  name: Your Full Name
+  phone: +91-9999999999
+  email: you@example.com
+  location: Your City, Country | Open to remote
+  links:
+  - label: linkedin.com/in/your-profile
+    url: https://www.linkedin.com/in/your-profile/
+  - label: github.com/your-username
+    url: https://github.com/your-username
+education:
+- degree: B.Tech in Your Branch
+  school: Your College
+  dates: 2022 – 2026
+experience:
+  logicgo:
+    title: Your Current Role
+    org: Current Company
+    dates: Jan 2026 – Present
+    bullets:
+      ai: What you build at your current job (one line).
+      uiux: Another responsibility (one line).
+  svnit:
+    title: Previous Role / Internship
+    org: Organisation
+    dates: Jan 2025 – Jun 2025
+    bullets:
+      guide: What the internship was about.
+      mediapipe: A concrete thing you did.
+      transformer: Another concrete thing you did.
+projects:
+  forest_fire:
+    name: Project 1 name
+    tech: Tech, used, here
+    year: '2025'
+    bullets:
+    - What you built.
+    - Result or detail.
+  retinopathy:
+    name: Project 2 name
+    tech: Tech, used, here
+    year: '2025'
+    bullets:
+    - What you built.
+    - Result or detail.
+  diamond:
+    name: Project 3 name
+    tech: Tech, used, here
+    year: '2025'
+    bullets:
+    - What you built.
+    - Result or detail.
+  milky:
+    name: Project 4 name
+    tech: Tech, used, here
+    year: '2025'
+    bullets:
+    - What you built.
+    - Result or detail.
+skills:
+  Languages:
+  - Python
+  - SQL
+  - JavaScript
+  - C
+  AI / ML:
+  - Machine Learning
+  - Deep Learning
+  - Computer Vision
+  - NLP
+  Generative AI:
+  - LLMs
+  - Prompt Engineering
+  - LangChain
+  - RAG
+  - Vector Databases
+  - Hugging Face Transformers
+  - OpenAI & Gemini APIs
+  ML Libraries:
+  - TensorFlow
+  - Keras
+  - PyTorch
+  - scikit-learn
+  - XGBoost
+  - OpenCV
+  - MediaPipe
+  Data:
+  - NumPy
+  - Pandas
+  - Matplotlib
+  - Seaborn
+  Backend:
+  - FastAPI
+  - Django
+  - Flask
+  - REST APIs
+  Frontend & Design:
+  - React
+  - HTML
+  - CSS
+  - JavaScript
+  - UI/UX
+  Databases & Cloud:
+  - MySQL
+  - PostgreSQL
+  - MongoDB
+  - AWS
+  - GCP
+  - Azure (basics)
+certifications:
+  aws: Certification 1 – Issuer (Month Year)
+  tata: Certification 2 – Issuer (Month Year)
+  web: Certification 3 – Issuer (Month Year)
+  python: Certification 4 – Issuer (Month Year)
+languages: English, Hindi, Gujarati
+variants:
+  ai_ml_engineer:
+    headline: AI/ML Engineer | Machine Learning | Deep Learning | Python
+    keywords:
+    - machine learning
+    - ml engineer
+    - ai/ml
+    - artificial intelligence
+    - deep learning
+    - nlp
+    - research
+    - applied scientist
+    - mlops
+    summary: 'Two or three lines tailored to this role: what you do, your strongest skills, what you are looking
+      for.'
+    skills:
+    - AI / ML
+    - ML Libraries
+    - Generative AI
+    - Languages
+    - Data
+    - Backend
+    - Databases & Cloud
+    logicgo:
+    - ai
+    - uiux
+    svnit:
+    - guide
+    - mediapipe
+    - transformer
+    projects:
+    - forest_fire
+    - retinopathy
+    - diamond
+    certifications:
+    - aws
+    - tata
+  genai_llm_engineer:
+    headline: Generative AI / LLM Engineer | LangChain | RAG | Python
+    keywords:
+    - llm
+    - llms
+    - genai
+    - gen ai
+    - generative ai
+    - generative
+    - gpt
+    - rag
+    - langchain
+    - prompt
+    - chatbot
+    - agentic
+    - agent
+    - agents
+    - openai
+    - gemini
+    - hugging face
+    - transformer
+    - conversational ai
+    summary: 'Two or three lines tailored to this role: what you do, your strongest skills, what you are looking
+      for.'
+    skills:
+    - Generative AI
+    - AI / ML
+    - ML Libraries
+    - Backend
+    - Languages
+    - Databases & Cloud
+    logicgo:
+    - ai
+    - uiux
+    svnit:
+    - guide
+    - transformer
+    - mediapipe
+    projects:
+    - diamond
+    - forest_fire
+    - retinopathy
+    certifications:
+    - aws
+    - python
+  data_scientist:
+    headline: Data Scientist | Machine Learning | Python | SQL
+    keywords:
+    - data scientist
+    - data science
+    - data analyst
+    - analytics
+    - analyst
+    - statistics
+    - statistical
+    - sql
+    - tableau
+    - power bi
+    - business intelligence
+    - predictive
+    - forecasting
+    - xgboost
+    summary: 'Two or three lines tailored to this role: what you do, your strongest skills, what you are looking
+      for.'
+    skills:
+    - Data
+    - AI / ML
+    - ML Libraries
+    - Languages
+    - Databases & Cloud
+    - Generative AI
+    logicgo:
+    - ai
+    - uiux
+    svnit:
+    - guide
+    - transformer
+    projects:
+    - diamond
+    - retinopathy
+    - forest_fire
+    certifications:
+    - tata
+    - aws
+  computer_vision_engineer:
+    headline: Computer Vision & Deep Learning Engineer | PyTorch | TensorFlow | OpenCV
+    keywords:
+    - computer vision
+    - vision
+    - image
+    - video
+    - opencv
+    - detection
+    - segmentation
+    - cnn
+    - mediapipe
+    - pose
+    - gesture
+    - medical imaging
+    - satellite
+    - cv engineer
+    summary: 'Two or three lines tailored to this role: what you do, your strongest skills, what you are looking
+      for.'
+    skills:
+    - AI / ML
+    - ML Libraries
+    - Languages
+    - Data
+    - Generative AI
+    - Backend
+    logicgo:
+    - ai
+    - uiux
+    svnit:
+    - mediapipe
+    - transformer
+    - guide
+    projects:
+    - forest_fire
+    - retinopathy
+    - diamond
+    certifications:
+    - aws
+    - tata
+  python_backend_developer:
+    headline: Python Developer | FastAPI | Django | Flask | REST APIs
+    keywords:
+    - python developer
+    - backend
+    - back end
+    - back-end
+    - django
+    - fastapi
+    - flask
+    - api
+    - apis
+    - rest
+    - microservices
+    - server
+    - software engineer
+    - software developer
+    - sde
+    summary: 'Two or three lines tailored to this role: what you do, your strongest skills, what you are looking
+      for.'
+    skills:
+    - Languages
+    - Backend
+    - Databases & Cloud
+    - AI / ML
+    - Generative AI
+    - ML Libraries
+    logicgo:
+    - ai
+    - uiux
+    svnit:
+    - guide
+    - transformer
+    projects:
+    - diamond
+    - milky
+    - forest_fire
+    certifications:
+    - python
+    - aws
+  full_stack_developer:
+    headline: Full Stack Developer | React | JavaScript | Python | UI/UX
+    keywords:
+    - full stack
+    - fullstack
+    - full-stack
+    - frontend
+    - front end
+    - front-end
+    - react
+    - web developer
+    - web development
+    - javascript
+    - mern
+    - ui
+    - ux
+    - ui/ux
+    - website
+    summary: 'Two or three lines tailored to this role: what you do, your strongest skills, what you are looking
+      for.'
+    skills:
+    - Frontend & Design
+    - Backend
+    - Languages
+    - Databases & Cloud
+    - AI / ML
+    - Generative AI
+    logicgo:
+    - uiux
+    - ai
+    svnit:
+    - guide
+    - transformer
+    projects:
+    - milky
+    - diamond
+    - forest_fire
+    certifications:
+    - web
+    - aws

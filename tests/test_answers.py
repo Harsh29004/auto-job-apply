@@ -42,9 +42,12 @@ def test_text_answers(answerer, question, expected):
     assert answerer.answer(question) == expected
 
 
-def test_unknown_question_returns_none(answerer):
+def test_unknown_question_returns_none(answerer, cfg):
     assert answerer.answer("What is your favourite programming paradigm?") is None
-    assert answerer.answer("What is your LinkedIn profile URL?") is None  # empty in config
+    no_links = Answerer(dict(cfg.profile, linkedin="", github=""), cfg.skills)
+    assert no_links.answer("What is your LinkedIn profile URL?") is None  # empty -> skip, never invent
+    assert Answerer(dict(cfg.profile, linkedin="https://x.test/me"), cfg.skills).answer(
+        "What is your LinkedIn profile URL?") == "https://x.test/me"
 
 
 def test_open_ended_questions(answerer, cfg):

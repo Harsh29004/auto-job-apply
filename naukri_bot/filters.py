@@ -18,6 +18,17 @@ def contains_term(text: str, term: str) -> bool:
     return re.search(pattern, text.lower()) is not None
 
 
+def min_years_required(text: str) -> int:
+    """Smallest 'N+ years' / 'N-M years' of experience mentioned in a job description (0 if none)."""
+    found = []
+    for m in re.finditer(r"(\d{1,2})\s*(?:\+|-|–|to)?\s*(?:\d{1,2})?\s*\+?\s*(?:years?|yrs?)", text or "", re.I):
+        tail = text[m.end():m.end() + 40].lower()
+        head = text[max(0, m.start() - 40):m.start()].lower()
+        if "experience" in tail or "experience" in head or "exp" in tail:
+            found.append(int(m.group(1)))
+    return min(found) if found else 0
+
+
 def skill_overlap(job: Job, skills: list[str]) -> list[str]:
     haystack = " | ".join(job.skills) + " | " + job.title + " | " + job.description
     return [s for s in skills if contains_term(haystack, s)]

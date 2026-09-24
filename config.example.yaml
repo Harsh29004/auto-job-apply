@@ -145,6 +145,10 @@ profile:
   shift_preference: Flexible - comfortable with any shift or time zone
   # answer for "On a scale of 1-10, rate your ..." questions
   self_rating: 7
+  experience_context: academic projects and my internship
+  timezone: IST (UTC+05:30)
+  country: India
+  expected_salary_usd: ""
   total_experience_years: 0
   total_experience_months: 0
   current_company: ""

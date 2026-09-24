@@ -5,6 +5,7 @@
   python linkedin_apply.py                # apply (LINKEDIN_MAX_APPLIES from .env)
   python linkedin_apply.py --max 3        # apply to at most 3 jobs
   python linkedin_apply.py --report       # export data/linkedin_jobs.csv + unanswered questions
+  python linkedin_apply.py --max 5 --then-company 5   # Easy Apply 5, then 5 company-site / Google Form jobs
 
 Search settings (keywords, location, experience level ...) are in .env (LINKEDIN_*).
 """
@@ -41,6 +42,9 @@ def main(argv=None):
     ap.add_argument("--login", action="store_true", help="only log in and save the session")
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--report", action="store_true")
+    ap.add_argument("--then-company", type=int, default=0, metavar="N",
+                    help="afterwards, apply to N queued company-site / Google Form jobs from LinkedIn "
+                         "(with --dry-run: fill only, never submit)")
     ap.add_argument("--config")
     args = ap.parse_args(argv)
 
@@ -63,6 +67,15 @@ def main(argv=None):
                 return 0 if bot.login() else 1
             stats = bot.run(args.max)
             logging.getLogger("linkedin").info("Done: %s", stats)
+        if args.then_company:
+            from naukri_bot.company import CompanyApplier
+            queue = Storage(cfg.data_dir / "naukri.db")
+            try:
+                with CompanyApplier(cfg, queue, submit=not args.dry_run, headless=args.headless) as company:
+                    cstats = company.run(args.then_company, sources=("linkedin",))
+                logging.getLogger("linkedin").info("Company-site applications: %s", cstats)
+            finally:
+                queue.close()
         report(cfg, db)
         return 0
     finally:

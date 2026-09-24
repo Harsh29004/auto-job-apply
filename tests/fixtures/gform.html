@@ -1,0 +1,80 @@
+<!doctype html>
+<!-- Minimal stand-in for a Google Form (same roles/attributes the real one uses). URL contains "forms" via ?docs.google.com/forms marker in tests. -->
+<html><body>
+<form id="f">
+<div id="page1" role="list">
+  <div role="listitem"><div role="heading">Full Name<span aria-label="Required question"> *</span></div>
+    <input type="text" name="name" aria-label="Your answer"></div>
+  <div role="listitem"><div role="heading">Email<span aria-label="Required question"> *</span></div>
+    <input type="email" name="email" aria-label="Your email"></div>
+  <div role="listitem"><div role="heading">Years of experience in Python<span aria-label="Required question"> *</span></div>
+    <div role="radiogroup" data-name="pyexp">
+      <div role="radio" data-value="0-1 years" aria-label="0-1 years" aria-checked="false">0-1 years</div>
+      <div role="radio" data-value="1-3 years" aria-label="1-3 years" aria-checked="false">1-3 years</div>
+      <div role="radio" data-value="3+ years" aria-label="3+ years" aria-checked="false">3+ years</div>
+    </div></div>
+  <div role="listitem"><div role="heading">Which of these skills do you have?</div>
+    <div role="checkbox" data-answer-value="Python" aria-label="Python" aria-checked="false">Python</div>
+    <div role="checkbox" data-answer-value="Java" aria-label="Java" aria-checked="false">Java</div>
+    <div role="checkbox" data-answer-value="React" aria-label="React" aria-checked="false">React</div>
+    <div role="checkbox" data-answer-value="Go" aria-label="Go" aria-checked="false">Go</div></div>
+  <div role="listitem"><div role="heading">Notice period<span aria-label="Required question"> *</span></div>
+    <div role="listbox" data-name="notice" tabindex="0" style="border:1px solid #999;padding:4px">
+      <div role="option" data-value="" aria-selected="true"><span>Choose</span></div>
+      <div role="option" data-value="Immediate" style="display:none">Immediate</div>
+      <div role="option" data-value="30 days" style="display:none">30 days</div>
+      <div role="option" data-value="60 days" style="display:none">60 days</div>
+    </div></div>
+  <div role="button" id="next"><span>Next</span></div>
+</div>
+<div id="page2" role="list" style="display:none">
+  <div role="listitem"><div role="heading">Why do you want to join us?<span aria-label="Required question"> *</span></div>
+    <textarea name="why"></textarea></div>
+  <div role="listitem"><div role="heading">LinkedIn profile URL</div>
+    <input type="text" name="linkedin" aria-label="Your answer"></div>
+  <div role="button" id="submit"><span>Submit</span></div>
+</div>
+</form>
+<div id="popup" style="display:none;position:absolute;background:#fff;border:1px solid #333"></div>
+<script>
+const answers = {};
+document.querySelectorAll('[role=radio]').forEach(r => r.addEventListener('click', () => {
+  r.parentElement.querySelectorAll('[role=radio]').forEach(x => x.setAttribute('aria-checked', 'false'));
+  r.setAttribute('aria-checked', 'true'); answers[r.parentElement.dataset.name] = r.dataset.value; }));
+document.querySelectorAll('[role=checkbox]').forEach(c => c.addEventListener('click', () => {
+  c.setAttribute('aria-checked', c.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); }));
+const lb = document.querySelector('[role=listbox]');
+lb.addEventListener('click', () => {
+  const pop = document.getElementById('popup');
+  pop.innerHTML = '';
+  lb.querySelectorAll('[role=option]').forEach(o => { if (!o.dataset.value) return;
+    const d = document.createElement('div'); d.setAttribute('role', 'option'); d.dataset.value = o.dataset.value;
+    d.innerText = o.dataset.value;
+    d.addEventListener('click', ev => { ev.stopPropagation(); lb.firstElementChild.innerHTML = '<span>' + o.dataset.value + '</span>';
+      answers.notice = o.dataset.value; pop.style.display = 'none'; });
+    pop.appendChild(d); });
+  pop.style.display = 'block';
+});
+function requiredEmpty(page) {
+  let bad = false;
+  page.querySelectorAll('[role=listitem]').forEach(it => {
+    if (!it.querySelector('[aria-label="Required question"]')) return;
+    const inp = it.querySelector('input, textarea');
+    const ok = inp ? inp.value.trim() !== '' : (it.querySelector('[aria-checked=true]') || (it.querySelector('[role=listbox]') && answers.notice));
+    if (!ok) { bad = true; if (!it.querySelector('[role=alert]')) it.insertAdjacentHTML('beforeend', '<div role="alert">This is a required question</div>'); }
+  });
+  return bad;
+}
+document.getElementById('next').addEventListener('click', () => {
+  if (requiredEmpty(document.getElementById('page1'))) return;
+  document.getElementById('page1').style.display = 'none'; document.getElementById('page2').style.display = 'block'; });
+document.getElementById('submit').addEventListener('click', () => {
+  if (requiredEmpty(document.getElementById('page2'))) return;
+  const f = document.getElementById('f');
+  answers.name = f.name.value; answers.email = f.email.value; answers.why = f.why.value; answers.linkedin = f.linkedin.value;
+  answers.skills = [...document.querySelectorAll('[role=checkbox][aria-checked=true]')].map(c => c.dataset.answerValue);
+  localStorage.setItem('gform', JSON.stringify(answers));
+  document.body.innerHTML = '<div>Your response has been recorded.</div>';
+});
+</script>
+</body></html>

@@ -26,6 +26,8 @@ from playwright.sync_api import Frame, Page, sync_playwright
 from .answers import Answerer
 from .ats import detect_ats, needs_login
 from .config import Config
+from .gforms import GoogleFormFlow, is_google_form
+from .resumes import ResumePicker
 from .storage import Storage
 
 log = logging.getLogger("company")
@@ -199,49 +201,90 @@ def email_from_href(href: str) -> str | None:
 class FieldFiller:
     """Maps a form field's label to a value from the profile."""
 
+    # where the job was found -> answer for "How did you hear about us?"
+    SOURCE_NAMES = {"naukri": "Naukri.com", "linkedin": "LinkedIn", "himalayas": "Himalayas", "remotive": "Remotive",
+                    "remoteok": "Remote OK", "jobicy": "Jobicy", "weworkremotely": "We Work Remotely",
+                    "arbeitnow": "Arbeitnow", "greenhouse": "Company website", "lever": "Company website",
+                    "ashby": "Company website"}
+
     def __init__(self, cfg: Config, answerer: Answerer):
         self.p = cfg.profile
         self.c = cfg.company_apply
         self.answerer = answerer
+        self.source = ""  # set per job by CompanyApplier
+
+    def heard_about(self, options: list[str] | None = None) -> str | None:
+        name = self.SOURCE_NAMES.get(self.source) or self.c.get("heard_about_us") or "Job board"
+        if not options:
+            return name
+        for want in (re.escape(name), r"linkedin" if self.source == "linkedin" else r"naukri",
+                     r"job ?board|job ?portal|job ?site|online|internet|website|other"):
+            hit = next((o for o in options if re.search(want, o, re.I)), None)
+            if hit:
+                return hit
+        return None
 
     def cover_letter(self, title: str, company: str) -> str:
         return (self.c.get("cover_letter") or "").format(title=title, company=company or "your company").strip()
 
     def value_for(self, field: dict, title: str, company: str):
-        """Return a value (str) for a text/select field, or None if unknown."""
-        text = " ".join([field.get("label", ""), field.get("placeholder", ""), field.get("name", "")]).lower()
+        """Return a value (str) for a text/select field, or None if unknown.
+
+        Personal-field rules ("Country", "City", "Company name") only apply to short labels - a long
+        question that happens to contain "state" or "country" goes to the Answerer instead."""
+        label = re.sub(r"[✱*]", " ", field.get("label") or "").strip()
+        text = " ".join([label, field.get("placeholder", ""), field.get("name", "")]).lower()
         text = re.sub(r"[_\-\[\]]+", " ", text)
+        words = re.findall(r"[a-z]+", (label or field.get("placeholder") or field.get("name") or "").lower())
+        short = len(words) <= 6
+        textual = field.get("tag") in ("input", "textarea") and field.get("type") not in ("radio", "checkbox", "combo")
         p = self.p
         first, last = split_name(p.get("name", ""))
-        rules = [
+        location = p.get("current_location") or ""
+        country = p.get("country") or "India"
+        if location and country.lower() not in location.lower():
+            location = f"{location}, {country}"
+        # unambiguous personal fields - any label length (but only typed into text boxes)
+        strong = [
+            (r"first and last name|full ?name|your name|legal name|candidate name|applicant name", p.get("name")),
+            (r"preferred (first )?name|nick ?name", first),
             (r"first ?name|given name|\bfname\b", first),
             (r"last ?name|surname|family name|\blname\b", last),
             (r"middle ?name", ""),
-            (r"father|mother|guardian|spouse", None),
             (r"e-?mail", p.get("email")),
-            (r"country ?code|\bisd\b", "+91"),
-            (r"phone|mobile|contact (no|number)|whatsapp|\btel\b|cell", p.get("phone")),
+            (r"phone|mobile|contact (no|number)|whatsapp|\btel\b", p.get("phone")),
             (r"linked ?in", p.get("linkedin") or None),
-            (r"git ?hub|portfolio|website|personal (site|url)", p.get("github") or None),
-            (r"cover ?letter|message|why (do you|should|are you)|tell us|about (you|yourself)|additional (info|information)|comments?|motivation",
+            (r"git ?hub|portfolio|personal (site|website|url)|website|other links|links you may have", p.get("github") or None),
+            (r"how did you (hear|find|come)|where did you (hear|find|see)|referr?al source", "__SOURCE__"),
+            (r"cover ?letter", self.cover_letter(title, company)),
+        ]
+        # field names - short labels only
+        short_rules = [
+            (r"father|mother|guardian|spouse", None),
+            (r"country ?code|\bisd\b|dial code", "+91"),
+            (r"\bsource\b|how did you (hear|find)|where did you (hear|find|see)", "__SOURCE__"),
+            (r"message|additional (info|information)|comments?|anything else|motivation|tell us|about (you|yourself)",
              self.cover_letter(title, company)),
-            (r"how did you (hear|find|come)|source|referr?al source|where did you", self.c.get("heard_about_us")),
             (r"subject", f"Application for {title}"),
             (r"position|job title|role (applied|applying)|applying for|post applied|job opening|opening", "__TITLE__"),
             (r"primary skills|key skills|skill ?set|technical skills|^skills|\bskills\b", ", ".join(
                 s for s in ["Python", "Machine Learning", "Deep Learning", "TensorFlow", "PyTorch", "OpenCV",
-                            "NLP", "SQL", "Flask", "React", "JavaScript"])),
-            (r"degree type|highest (educational )?qualification|education level|qualification", p.get("highest_qualification")),
+                            "NLP", "LLMs", "SQL", "FastAPI", "React", "JavaScript"])),
+            (r"degree type|highest (educational )?qualification|education level|qualification|\bdegree\b",
+             p.get("highest_qualification")),
             (r"previously (worked|employed|applied)|worked (with|for) us (before)?|ex-?employee", "No"),
             (r"gender", p.get("gender") or "__PREFER_NOT__"),
-            (r"current (company|employer|organi[sz]ation)|company name|employer", p.get("current_company")),
+            (r"current (company|employer|organi[sz]ation)|company name|employer|organi[sz]ation", p.get("current_company")),
             (r"current (designation|title|role|position)|designation", p.get("current_designation")),
-            (r"(full |your |candidate |applicant )?name\b", p.get("name")),
-            (r"\bcity\b|location|address|residence|where do you live", p.get("current_location")),
-            (r"\bstate\b", "Gujarat"),
-            (r"country", "India"),
-            (r"pin ?code|zip|postal", None),
+            (r"\bname\b", p.get("name")),
+            (r"country|nationality|citizenship", country),
+            (r"\bcity\b|location|address|residence|where do you live|based in", location),
+            (r"\bstate\b|province|region", p.get("state") or None),
+            (r"pin ?code|zip|postal", p.get("postal_code") or None),
+            (r"school|college|university|institut", p.get("college")),
+            (r"graduation|pass(ing)? year|year of (passing|graduation)", p.get("graduation_year")),
         ]
+        rules = (strong if textual else []) + (short_rules if short else [])
         for pattern, value in rules:
             if re.search(pattern, text):
                 if value == "__PREFER_NOT__":
@@ -249,6 +292,8 @@ class FieldFiller:
                                  if re.search(r"prefer not|not (to )?disclose|do not prefer|rather not", o, re.I)), None)
                 if value == "__TITLE__":
                     return self.match_title(title, field) if field.get("tag") == "select" else title
+                if value == "__SOURCE__":
+                    return self.heard_about(field.get("options") if field.get("tag") == "select" else None)
                 if field.get("tag") == "select" and value:
                     return self.answerer.match_option(str(value), field.get("options") or [])
                 return value
@@ -278,8 +323,9 @@ class FieldFiller:
 
 class CompanyApplier:
     def __init__(self, cfg: Config, db: Storage, submit: bool = True, headless: bool = False,
-                 assist_seconds: int = 0):
+                 assist_seconds: int = 0, profile_dir: Path | None = None):
         self.cfg = cfg
+        self.profile_dir = Path(profile_dir) if profile_dir else cfg.root / "browser_profile_company"
         self.db = db
         self.submit = submit
         self.headless = headless
@@ -287,7 +333,11 @@ class CompanyApplier:
         self.answerer = Answerer(cfg.profile, cfg.skills, cfg.custom_answers)
         self.filler = FieldFiller(cfg, self.answerer)
         resume = cfg.company_apply.get("resume_pdf") or ""
-        self.resume = (cfg.root / resume) if resume else None
+        self.default_resume = (cfg.root / resume) if resume else None
+        self.resume = self.default_resume
+        # role-specific resumes built by build_resumes.py (falls back to resume_pdf)
+        self.resumes = ResumePicker(cfg.root, resume or None, cfg.data_dir / "upload")
+        self.gforms = GoogleFormFlow(self)
         self.debug_dir = cfg.data_dir / "company_debug"
         self.debug_dir.mkdir(exist_ok=True)
         self._pw = self.ctx = self.page = None
@@ -296,7 +346,7 @@ class CompanyApplier:
     def __enter__(self):
         self._pw = sync_playwright().start()
         self.ctx = self._pw.chromium.launch_persistent_context(
-            str(self.cfg.root / "browser_profile_company"), headless=self.headless,
+            str(self.profile_dir), headless=self.headless,
             args=["--disable-blink-features=AutomationControlled"], viewport={"width": 1366, "height": 900},
             user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
@@ -351,16 +401,33 @@ class CompanyApplier:
         return "\n".join(parts)
 
     def has_visible_captcha(self) -> bool:
+        """A captcha the user must solve (checkbox / challenge). The invisible reCAPTCHA badge
+        (256x60 in the corner, size=invisible) is not one - forms with it submit normally."""
         for fr in self.page.frames:
-            if re.search(r"recaptcha/api2/anchor|hcaptcha.com/captcha|challenges.cloudflare", fr.url):
+            if re.search(r"recaptcha/(api2|enterprise)/anchor|hcaptcha.com/captcha|challenges.cloudflare", fr.url):
+                if "size=invisible" in fr.url:
+                    continue
                 try:
-                    el = fr.frame_element()
-                    box = el.bounding_box()
-                    if box and box["width"] > 60 and box["height"] > 40:
-                        return True
+                    box = fr.frame_element().bounding_box()
                 except PWError:
-                    pass
+                    continue
+                if not box or box["width"] < 60 or box["height"] < 40:
+                    continue
+                if abs(box["width"] - 256) < 4 and abs(box["height"] - 60) < 4:
+                    continue  # invisible reCAPTCHA badge
+                return True
         return False
+
+    def bot_wall(self) -> bool:
+        """Cloudflare-style 'checking your browser' page. We don't try to get past these."""
+        title = ""
+        try:
+            title = self.page.title()
+        except PWError:
+            pass
+        return bool(re.search(r"just a moment|attention required|access denied", title, re.I)) or bool(
+            re.search(r"performing security verification|verify you are human|checking your browser|"
+                      r"enable javascript and cookies to continue", self.body_text()[:1500], re.I))
 
     def scan(self) -> tuple[Frame | None, list[dict]]:
         """Frame holding the best-looking application form, with its fields."""
@@ -379,6 +446,10 @@ class CompanyApplier:
                 score += 3
             if re.search(r"newsletter|subscribe", kinds) and len(fields) <= 2:
                 score = 0
+            # job boards' own "upload your CV to be discovered" / job-alert widgets are not applications
+            if re.search(r"be discovered|unlock remote|job alerts?|talent (pool|network|community)|"
+                         r"get (job|new) (alerts|jobs)|sign ?up|create (an )?account|log ?in", kinds):
+                score = 0
             if score > best_score:
                 best, best_fields, best_score = fr, fields, score
         is_form = best_score >= 5 and any(
@@ -390,7 +461,10 @@ class CompanyApplier:
     def apply_job(self, job: dict) -> tuple[str, str]:
         url = job.get("apply_url") or ""
         if not url:
-            return "manual", "no company link on Naukri"
+            return "manual", "no apply link"
+        self.resume = self.resumes.pick(job.get("title", ""), job.get("description") or "") or self.default_resume
+        self.answerer.job_location = job.get("location") or ""
+        self.filler.source = job.get("source") or "naukri"
         ats = detect_ats(url)
         if needs_login(ats):
             return "manual", f"{ats} needs an account - apply manually"
@@ -398,6 +472,10 @@ class CompanyApplier:
             self.open(url)
         except PWError as e:
             return "manual", f"site did not open: {str(e).splitlines()[0][:120]}"
+        if self.bot_wall():
+            self.page.wait_for_timeout(6000)  # some walls clear by themselves for a normal browser
+            if self.bot_wall():
+                return "manual", "site shows a bot check (Cloudflare) - open the link and apply yourself"
         final_ats = detect_ats(self.page.url)
         if needs_login(final_ats):
             self.db.update_external(job["job_id"], "pending", apply_url=self.page.url, ats=final_ats)
@@ -405,7 +483,13 @@ class CompanyApplier:
 
         title, company = job.get("title", ""), job.get("company", "")
         for hop in range(3):
-            frame, fields = self.scan()
+            if is_google_form(self.page.url):
+                return self.gforms.apply(job)
+            # on a job board's listing page the application is behind its Apply button - never
+            # fill the board's own widgets (CV upload for "be discovered", alerts ...)
+            on_board = re.search(r"(^|\.)(jobicy|remotive|remoteok|weworkremotely|himalayas|arbeitnow)\.",
+                                 urlparse(self.page.url).netloc.lower() + ".")
+            frame, fields = (None, []) if on_board and not re.search(r"/apply\b", self.page.url) else self.scan()
             if frame:
                 return self.fill_and_submit(frame, fields, job)
             route = self.click_apply(title)
@@ -547,15 +631,21 @@ class CompanyApplier:
             try:
                 if f["type"] == "file":
                     text = (label + " " + f.get("name", "")).lower()
-                    if re.search(r"cover|photo|picture|image|avatar", text) and "resume" not in text:
-                        if f["required"]:
+                    if re.search(r"cover|photo|picture|image|avatar|autofill|auto-fill|parse", text) and \
+                            not re.search(r"^(resume|cv)\b", text):
+                        if f["required"] and "autofill" not in text:
                             missing.append(label or "file")
                         continue
-                    if self.resume and self.resume.exists():
-                        frame.locator(f"[data-nb-idx='{f['idx']}']").set_input_files(str(self.resume))
-                        log.info("   upload resume -> %s", label or f.get("name"))
-                    elif f["required"]:
-                        missing.append("resume upload (set company_apply.resume_pdf)")
+                    if not (self.resume and self.resume.exists()):
+                        if f["required"]:
+                            missing.append("resume upload (run build_resumes.py or set company_apply.resume_pdf)")
+                        continue
+                    if not self.submit:
+                        # preview: many sites upload the file the moment it is chosen -> don't send it
+                        log.info("   (preview) would upload %s -> %s", self.resume.parent.name, label or f.get("name"))
+                        continue
+                    frame.locator(f"[data-nb-idx='{f['idx']}']").set_input_files(str(self.resume))
+                    log.info("   upload resume (%s) -> %s", self.resume.parent.name, label or f.get("name"))
                     continue
                 if f["type"] in ("radio", "checkbox"):
                     self._fill_choice(frame, f, missing)
@@ -727,10 +817,12 @@ class CompanyApplier:
         return "applied", f"emailed resume to {to}"
 
     # ----------------------------------------------------------------- run
-    def run(self, limit: int | None = None, retry_manual: bool = False) -> dict:
+    def run(self, limit: int | None = None, retry_manual: bool = False, sources: tuple[str, ...] | None = None,
+            statuses: tuple[str, ...] | None = None) -> dict:
         limit = limit or int(self.cfg.company_apply.get("max_per_run", 15))
-        statuses = ("pending", "manual", "unconfirmed", "failed") if retry_manual else ("pending",)
-        jobs = self.db.external_jobs(statuses, limit=limit)
+        if statuses is None:
+            statuses = ("pending", "manual", "unconfirmed", "failed") if retry_manual else ("pending",)
+        jobs = self.db.external_jobs(statuses, limit=limit, sources=sources)
         log.info("%d company-site jobs to process", len(jobs))
         stats: dict[str, int] = {}
         for job in jobs:
@@ -743,8 +835,9 @@ class CompanyApplier:
             except PWError as e:
                 shot = self.snapshot(f"error_{job['job_id']}")
                 status, detail = "failed", f"{str(e).splitlines()[0][:150]} ({shot})"
-            if status == "filled":
-                log.info(" -> FILLED (not submitted) %s", detail)
+            if status == "filled" or not self.submit:
+                # preview run (--no-submit): report only, keep the job pending for the real run
+                log.info(" -> %s (preview, not saved) %s", status.upper(), detail)
             else:
                 self.db.update_external(job["job_id"], status, detail)
                 log.info(" -> %s %s", status.upper(), detail)

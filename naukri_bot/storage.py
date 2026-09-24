@@ -35,6 +35,12 @@ class Storage:
         self.path = Path(path)
         self.conn = sqlite3.connect(self.path)
         self.conn.executescript(SCHEMA)
+        # columns added after the first release
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(external_jobs)")}
+        for col in ("source", "description"):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE external_jobs ADD COLUMN {col} TEXT DEFAULT ''")
+        self.conn.commit()
 
     def close(self):
         self.conn.close()
@@ -89,18 +95,23 @@ class Storage:
         ).fetchall()
 
     # ------------------------------------------------ company-site (external) jobs
-    def save_external(self, job: Job, score: int = 0) -> bool:
-        """Remember a relevant company-site job. Returns True if it is new."""
+    def save_external(self, job: Job, score: int = 0, source: str = "naukri") -> bool:
+        """Remember a relevant company-site job. Returns True if it is new.
+        `naukri_url` holds the listing page on whichever board the job came from."""
         now = datetime.now().isoformat(timespec="seconds")
         if job.apply_url and self.conn.execute(
                 "SELECT 1 FROM external_jobs WHERE apply_url=? AND job_id<>?", (job.apply_url, job.job_id)).fetchone():
             return False  # same company link already saved (posting repeated for another city)
+        if self.conn.execute(
+                "SELECT 1 FROM external_jobs WHERE lower(title)=lower(?) AND lower(company)=lower(?) AND job_id<>?",
+                (job.title, job.company, job.job_id)).fetchone():
+            return False  # same job already found on another board
         cur = self.conn.execute(
             "INSERT OR IGNORE INTO external_jobs "
-            "(job_id,title,company,location,experience,score,naukri_url,apply_url,ats,status,detail,added_at,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,'pending','',?,?)",
+            "(job_id,title,company,location,experience,score,naukri_url,apply_url,ats,status,detail,added_at,updated_at,"
+            "source,description) VALUES (?,?,?,?,?,?,?,?,?,'pending','',?,?,?,?)",
             (job.job_id, job.title, job.company, job.location, job.experience, score,
-             job.url, job.apply_url, detect_ats(job.apply_url), now, now),
+             job.url, job.apply_url, detect_ats(job.apply_url), now, now, source, (job.description or "")[:6000]),
         )
         if not cur.rowcount and job.apply_url:  # fill in a link we didn't have before
             self.conn.execute(
@@ -109,11 +120,17 @@ class Storage:
         self.conn.commit()
         return bool(cur.rowcount)
 
-    def external_jobs(self, statuses: tuple[str, ...] = ("pending",), limit: int | None = None) -> list[dict]:
-        q = f"SELECT * FROM external_jobs WHERE status IN ({','.join('?' * len(statuses))}) ORDER BY score DESC, added_at"
+    def external_jobs(self, statuses: tuple[str, ...] = ("pending",), limit: int | None = None,
+                      sources: tuple[str, ...] | None = None) -> list[dict]:
+        q = f"SELECT * FROM external_jobs WHERE status IN ({','.join('?' * len(statuses))})"
+        args = list(statuses)
+        if sources:
+            q += f" AND source IN ({','.join('?' * len(sources))})"
+            args += list(sources)
+        q += " ORDER BY score DESC, added_at"
         if limit:
             q += f" LIMIT {int(limit)}"
-        cur = self.conn.execute(q, statuses)
+        cur = self.conn.execute(q, args)
         cols = [c[0] for c in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
@@ -134,11 +151,11 @@ class Storage:
 
     def export_external_csv(self, path: str | Path) -> int:
         rows = self.conn.execute(
-            "SELECT status,title,company,location,experience,score,ats,apply_url,naukri_url,detail,added_at,updated_at "
-            "FROM external_jobs ORDER BY status, score DESC").fetchall()
+            "SELECT status,source,title,company,location,experience,score,ats,apply_url,naukri_url,detail,added_at,"
+            "updated_at FROM external_jobs ORDER BY status, score DESC").fetchall()
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["status", "title", "company", "location", "experience", "score", "ats", "apply_url",
-                        "naukri_url", "detail", "added_at", "updated_at"])
+            w.writerow(["status", "source", "title", "company", "location", "experience", "score", "ats", "apply_url",
+                        "listing_url", "detail", "added_at", "updated_at"])
             w.writerows(rows)
         return len(rows)

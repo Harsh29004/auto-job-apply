@@ -100,16 +100,43 @@ class Answerer:
             if key and key in q:
                 return value
 
+        # --- voluntary self-identification (EEO): never guess ---------------
+        if re.search(r"hispanic|latin[oa]\b|\brace\b|ethnicit|veteran|disabilit|sexual orientation|transgender|"
+                     r"pronoun|lgbt|gender identity", q):
+            return self._decline(options)
+        if re.search(r"\bgender\b|\bsex\b", q):
+            return p.get("gender") or self._decline(options)
+
         # --- open-ended text questions --------------------------------------
         if not options:
             if re.search(r"\bprojects?\b", q) and re.search(r"explain|describe|tell|share|brief|detail|mention|summar|walk", q):
                 return p.get("project_summary") or None
-            if re.search(r"why (do you want|should we|are you interested|this (role|company|job))|why (join|us)|reason for (applying|change|job change|switch)|motivat", q):
+            if re.search(r"why (do you want|should we|are you interested|this (role|company|job))|why (join|us)|"
+                         r"reason for (applying|change|job change|switch)|motivat|what (interests|excites|attracts|draws) "
+                         r"you|about joining|interest(ed)? in (this|the|our) (role|position|company|team|job)|"
+                         r"why (are you|do you want to) (apply|join|work)", q):
                 return p.get("why_join") or None
             if re.search(r"about yourself|introduce yourself|describe yourself|your (profile|background) (in brief|briefly)|brief (summary|introduction)", q):
                 return p.get("about_me") or None
+            if re.match(r"^(please )?(describe|tell us about|explain|elaborate on|share|walk us through)\b.*\bexperience\b", q):
+                return self._experience_sentence(question)
+
+        # --- time zone / country ---------------------------------------------
+        if re.search(r"(what|which) time ?zone|your (current )?time ?zone|time ?zone (are you|do you)", q):
+            tz = p.get("timezone") or "IST (UTC+05:30)"
+            if options:
+                return next((o for o in options if re.search(r"\bist\b|india|kolkata|calcutta|5:30|utc ?\+ ?5|gmt ?\+ ?5",
+                                                             o, re.I)), None)
+            return tz
+        if re.search(r"country of (residence|origin|citizenship)|nationality|citizenship|(which|what) country "
+                     r"(do you|are you)|country (do you|are you) (live|reside|based|located)", q):
+            return p.get("country") or "India"
 
         # --- salary --------------------------------------------------------
+        if re.search(r"\b(ctc|salary|package|compensation|remuneration|lpa|stipend|pay|rate)\b", q) and \
+                re.search(r"usd|\$|dollar|eur\b|€|euro|gbp|£|pound", q):
+            usd = p.get("expected_salary_usd")
+            return str(usd) if usd not in (None, "") and re.search(r"usd|\$|dollar", q) else None
         if re.search(r"\b(ctc|salary|package|compensation|remuneration|lpa|stipend)\b", q):
             if re.search(r"expect|desire|looking for|require", q):
                 return self._money(p.get("expected_ctc_lpa"), q)
@@ -118,7 +145,9 @@ class Answerer:
             return self._money(p.get("expected_ctc_lpa"), q)
 
         # --- notice period / joining ---------------------------------------
-        if "notice" in q or re.search(r"\bjoin", q) or "serving" in q:
+        joining = re.search(r"\bjoin", q) and re.search(r"when|how soon|available|availability|start|date|immediate|"
+                                                       r"days|weeks|earliest|notice", q)
+        if "notice" in q or joining or "serving" in q:
             if re.search(r"\b(can|will|would|are) you\b.*\b(join|joining)\b.*\b(immediate|within|asap|\d+ days)", q):
                 return YES
             if "serving" in q:
@@ -166,8 +195,17 @@ class Answerer:
             return p.get("twelfth_percentage") or None
         if re.search(r"\b(10th|ssc|matric|secondary school)\b", q):
             return p.get("tenth_percentage") or None
-        if re.search(r"cgpa|\bgpa\b|percentage|aggregate|marks", q):
+        if re.search(r"cgpa|\bgpa\b|percentage|aggregate|marks|degree result|\bgrades?\b|classification|honou?rs", q):
             return p.get("cgpa") or None
+        edu = re.search(r"completed .*?(high school|secondary|associate|diploma|bachelor|undergraduate|b\.?tech|"
+                        r"master|m\.?tech|post ?graduate|doctora|ph\.?d)", q)
+        if edu:
+            level = {"high school": 1, "secondary": 1, "associate": 2, "diploma": 2, "bachelor": 3, "undergraduate": 3,
+                     "master": 4, "post": 4, "doctora": 5}
+            key = next((k for k in level if edu.group(1).startswith(k[:4])), "bachelor")
+            return YES if level[key] <= 3 else NO  # you hold a bachelor's degree (B.Tech)
+        if re.search(r"18 years|over 18|at least 18|above 18|legal age", q):
+            return YES
         if re.search(r"year of (passing|graduation|completion)|passing year|pass ?out|graduation year|graduated in|batch", q):
             if options and any(o.lower() in (YES.lower(), NO.lower()) for o in options):
                 return YES if str(p.get("graduation_year")) in q else NO
@@ -302,10 +340,20 @@ class Answerer:
     def _fmt(v: float) -> str:
         return str(int(v)) if float(v).is_integer() else f"{v:g}"
 
+    # Yes/No questions are only answered "Yes" when they ask about willingness / consent /
+    # flexibility. Anything else unknown stays unanswered instead of guessing.
+    POSITIVE = re.compile(
+        r"willing|comfortable|able to|available|okay|\bok\b|open to|agree|consent|confirm|acknowledge|ready|flexible|"
+        r"happy to|interested|fine with|accept|understand|certify|declare|relocat|travel|commut|background (check|"
+        r"verification)|work (from|in|at) (the )?(office|onsite|on-site|remote|home|hybrid)|in[- ]person|\bmeet\b|"
+        r"night|shift|weekend|bond|start (immediately|asap|soon)|laptop|internet connection|own (computer|device)")
+
     def _yes_no(self, q: str, options: list[str] | None):
         opts = [o.lower() for o in options or []]
         is_yn_question = re.match(
-            r"^(are|do|can|will|would|have|has|is|did|could|should|shall|please confirm|confirm|kindly confirm)\b", q
+            r"^(are|do|can|will|would|have|has|is|did|could|should|shall|please confirm|confirm|kindly confirm|"
+            r"please acknowledge|i agree|i confirm|i understand|i acknowledge|i consent|i certify|i declare|"
+            r"by (checking|clicking|submitting))\b", q
         ) or (opts and any(o in ("yes", "no") or o.startswith(("yes", "no")) for o in opts))
         if not is_yn_question:
             return None
@@ -323,10 +371,33 @@ class Answerer:
             return NO
 
         # "Do you have experience in X?" -> Yes only if X is a resume skill
-        m = re.search(r"(experience|hands[- ]on|worked|knowledge|familiar|proficient|expertise|skilled)\b.*?\b(in|with|on|of)\s+(.+)", q)
+        m = re.search(r"(experience|hands[- ]on|worked|knowledge|familiar|proficient|expertise|skilled)\b.*?"
+                      r"\b(in|with|on|of|about)\s+(.+)", q)
         if m and not re.search(r"comfortable|willing|okay|ok\b|fine|ready|open", q):
             return YES if self._known_skill_in(m.group(3)) else NO
-        return YES
+        return YES if self.POSITIVE.search(q) else None
+
+    @staticmethod
+    def _decline(options: list[str] | None):
+        """The 'prefer not to say' option of an EEO question, else None (leave it empty)."""
+        return next((o for o in options or [] if re.search(
+            r"decline|prefer not|don.?t (wish|want)|do not (wish|want)|not to (say|disclose|answer|identify)|"
+            r"rather not|choose not|not disclose|no answer", o, re.I)), None)
+
+    def _experience_sentence(self, question: str):
+        """Honest one-liner for 'Describe your experience with X'."""
+        m = re.search(r"experience\s+(?:with|in|as|of|using|working with|on)\s+(?:an?\s+)?(.+?)(?:[?.*]|$)", question, re.I)
+        subject = (m.group(1).strip() if m else "").rstrip(" *?.")
+        if not subject:
+            return None
+        skill = self._known_skill_in(subject)
+        if skill:
+            years = self._fmt(self._skill_years(skill))
+            unit = "year" if years == "1" else "years"
+            context = self.p.get("experience_context") or "academic projects and work experience"
+            return f"About {years} {unit} of hands-on experience with {subject}, from {context}."
+        return (f"I have not worked with {subject} professionally yet, but I pick up new tools quickly "
+                f"and would be glad to build that experience.")
 
     # answer -> other ways a form may spell it
     SYNONYMS = {

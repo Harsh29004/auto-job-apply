@@ -11,14 +11,14 @@ import random
 import re
 import time
 from datetime import datetime
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from playwright.sync_api import Error as PWError
 from playwright.sync_api import sync_playwright
 
 from .company import SCAN_JS, CompanyApplier
 from .config import Config
-from .filters import evaluate
+from .filters import evaluate, min_years_required  # noqa: F401  (min_years_required re-exported)
 from .models import Job
 from .storage import Storage
 
@@ -59,8 +59,10 @@ ABOUT_JOB_JS = r"""
 
 
 def search_url(keyword: str, location: str, levels: list[str], date_posted: str, start: int = 0,
-               work_types: list[str] | None = None) -> str:
-    params = {"keywords": keyword, "location": location, "f_AL": "true", "start": start}
+               work_types: list[str] | None = None, easy_apply_only: bool = True) -> str:
+    params = {"keywords": keyword, "location": location, "start": start}
+    if easy_apply_only:
+        params["f_AL"] = "true"
     if levels:
         params["f_E"] = ",".join(levels)
     if work_types:
@@ -69,16 +71,6 @@ def search_url(keyword: str, location: str, levels: list[str], date_posted: str,
         params["f_TPR"] = date_posted
     return f"{BASE}/jobs/search/?{urlencode(params)}"
 
-
-def min_years_required(text: str) -> int:
-    """Smallest 'N+ years' / 'N-M years' of experience mentioned in a job description (0 if none)."""
-    found = []
-    for m in re.finditer(r"(\d{1,2})\s*(?:\+|-|–|to)?\s*(?:\d{1,2})?\s*\+?\s*(?:years?|yrs?)", text, re.I):
-        tail = text[m.end():m.end() + 40].lower()
-        head = text[max(0, m.start() - 40):m.start()].lower()
-        if "experience" in tail or "experience" in head or "exp" in tail:
-            found.append(int(m.group(1)))
-    return min(found) if found else 0
 
 
 class LinkedInQuota(Exception):
@@ -94,6 +86,7 @@ class LinkedInBot:
         self.headless = headless
         # reuse the company-site form filler (answers, dropdowns, resume upload ...)
         self.forms = CompanyApplier(cfg, db, submit=True, headless=headless)
+        self.queue = Storage(cfg.data_dir / "naukri.db")  # external_jobs -> company_apply.py
         self.debug_dir = cfg.data_dir / "linkedin_debug"
         self.debug_dir.mkdir(exist_ok=True)
         self._pw = self.ctx = self.page = None
@@ -118,6 +111,7 @@ class LinkedInBot:
             self.ctx.close()
         finally:
             self._pw.stop()
+            self.queue.close()
 
     def pause(self, lo: float = 6, hi: float = 14):
         time.sleep(random.uniform(lo, hi))
@@ -190,7 +184,7 @@ class LinkedInBot:
     # --------------------------------------------------------------- search
     def search(self, keyword: str, location: str, page_no: int) -> list[dict]:
         url = search_url(keyword, location, self.li["experience_levels"], self.li["date_posted"], page_no * 25,
-                         self.li.get("work_types"))
+                         self.li.get("work_types"), self.li.get("easy_apply_only", True))
         self.page.goto(url, wait_until="domcontentloaded")
         self.page.wait_for_timeout(4000)
         # the result list is lazy - scroll every card into view
@@ -235,6 +229,18 @@ class LinkedInBot:
                 continue
         return None
 
+    def external_apply_url(self) -> str:
+        """Company-site / Google Form link behind LinkedIn's 'Apply on company website' button."""
+        link = self.page.locator("a[aria-label*='company website'], a[aria-label*='Apply on']").locator("visible=true")
+        if not link.count():
+            link = self.page.locator("a").filter(has_text=re.compile(r"^\s*Apply\s*$")).locator("visible=true")
+        if not link.count():
+            return ""
+        href = link.first.get_attribute("href") or ""
+        # LinkedIn wraps it: https://www.linkedin.com/safety/go/?url=<encoded target>&urlhash=...
+        target = parse_qs(urlparse(href).query).get("url", [""])[0]
+        return target or (href if href.startswith("http") and "linkedin.com" not in href else "")
+
     # ---------------------------------------------------------------- apply
     # The Easy Apply dialog lives in a shadow root, so <body>.innerText can't see it.
     # Playwright text locators pierce shadow DOM - always use these for state checks.
@@ -261,7 +267,8 @@ class LinkedInBot:
             return "already_applied", ""
         btn = self.easy_apply_button()
         if btn is None:
-            return "external", "no Easy Apply (company site)"
+            url = self.external_apply_url()
+            return ("external", url) if url else ("external", "no Easy Apply and no company link")
         btn.click()
         try:
             self.page.locator(".jobs-easy-apply-modal").first.wait_for(state="visible", timeout=10000)
@@ -450,6 +457,10 @@ class LinkedInBot:
                             status, detail = "error", str(e).splitlines()[0][:150]
                             self.snapshot(f"exception_{job.job_id}")
                             self.discard()
+                        if status == "external" and detail.startswith("http"):
+                            job.apply_url, job.external = detail, True
+                            new = self.queue.save_external(job, score, source="linkedin")
+                            detail = ("queued for company_apply.py: " if new else "already queued: ") + detail[:120]
                         if not self.dry_run or status != "planned":
                             self.db.record(job, status, detail or reason, score)
                         stats[status] = stats.get(status, 0) + 1

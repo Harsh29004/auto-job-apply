@@ -21,6 +21,7 @@ class Config:
     custom_answers: dict = field(default_factory=dict)
     company_apply: dict = field(default_factory=dict)
     linkedin: dict = field(default_factory=dict)
+    foreign: dict = field(default_factory=dict)
     email: str = ""
     password: str = ""
     smtp_email: str = ""
@@ -124,8 +125,22 @@ def load_config(path: str | Path | None = None, env_path: str | Path | None = No
         "experience_levels": env_list("LINKEDIN_EXPERIENCE_LEVELS") or ["1", "2"],
         "date_posted": (os.getenv("LINKEDIN_DATE_POSTED") or "r604800").strip(),
         "work_types": env_list("LINKEDIN_WORK_TYPE") or [],
+        # false = also collect jobs that apply on the company site / Google Form (queued for company_apply.py)
+        "easy_apply_only": (os.getenv("LINKEDIN_EASY_APPLY_ONLY") or "false").strip().lower() in ("1", "true", "yes"),
         "pages_per_search": env_int("LINKEDIN_PAGES_PER_SEARCH") or 2,
         "max_applies": env_int("LINKEDIN_MAX_APPLIES") or 15,
+    }
+
+    truthy = lambda name, default: (os.getenv(name) or str(default)).strip().lower() in ("1", "true", "yes")  # noqa: E731
+    foreign = {
+        "sources": env_list("FOREIGN_SOURCES") or [],
+        "keywords": env_list("FOREIGN_KEYWORDS") or [],
+        "max_years": env_int("FOREIGN_MAX_YEARS") if env_int("FOREIGN_MAX_YEARS") is not None else 2,
+        "allow_relocation": truthy("FOREIGN_ALLOW_RELOCATION", True),
+        "boards": env_list("FOREIGN_BOARDS") or [],
+        "countries": [c.lower() for c in (raw.get("profile") or {}).get("work_authorized_countries") or ["India"]],
+        "pages": env_int("FOREIGN_PAGES") or 1,
+        "cache_hours": env_int("FOREIGN_CACHE_HOURS") or 6,
     }
 
     return Config(
@@ -137,6 +152,7 @@ def load_config(path: str | Path | None = None, env_path: str | Path | None = No
         custom_answers={str(k).lower(): v for k, v in (raw.get("custom_answers") or {}).items()},
         company_apply=company,
         linkedin=linkedin,
+        foreign=foreign,
         email=os.getenv("NAUKRI_EMAIL", "").strip(),
         smtp_email=os.getenv("SMTP_EMAIL", "").strip(),
         smtp_password=os.getenv("SMTP_APP_PASSWORD", "").replace(" ", "").strip(),
