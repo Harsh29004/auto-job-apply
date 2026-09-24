@@ -240,10 +240,11 @@ class FieldFiller:
         textual = field.get("tag") in ("input", "textarea") and field.get("type") not in ("radio", "checkbox", "combo")
         p = self.p
         first, last = split_name(p.get("name", ""))
-        location = p.get("current_location") or ""
+        city = p.get("current_location") or ""
         country = p.get("country") or "India"
-        if location and country.lower() not in location.lower():
-            location = f"{location}, {country}"
+        location = city
+        if city and country.lower() not in city.lower():
+            location = f"{city}, {country}"
         # unambiguous personal fields - any label length (but only typed into text boxes)
         strong = [
             (r"first and last name|full ?name|your name|legal name|candidate name|applicant name", p.get("name")),
@@ -278,7 +279,8 @@ class FieldFiller:
             (r"current (designation|title|role|position)|designation", p.get("current_designation")),
             (r"\bname\b", p.get("name")),
             (r"country|nationality|citizenship", country),
-            (r"\bcity\b|location|address|residence|where do you live|based in", location),
+            (r"\bcity\b", city),
+            (r"location|address|residence|where do you live|based in", location),
             (r"\bstate\b|province|region", p.get("state") or None),
             (r"pin ?code|zip|postal", p.get("postal_code") or None),
             (r"school|college|university|institut", p.get("college")),

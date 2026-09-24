@@ -216,6 +216,29 @@ class Answerer:
             return p.get("degree_branch")
         if re.search(r"college|university|institute", q):
             return p.get("college")
+        if re.search(r"grading system|grading scale|grade type", q):
+            if options:
+                return next((o for o in options if re.search(r"percentage|percent|%|indian|10[ -]point", o, re.I)),
+                            options[0] if options else None)
+            return "Percentage"
+        if re.search(r"(how did you )?perform.*(math|maths|mathematics)", q):
+            if options:
+                return next((o for o in options if re.search(r"top|above average|8|9|very well|strong", o, re.I)),
+                            None)
+            return p.get("high_school_math") or "Above average"
+        if re.search(r"(how did you )?perform.*(native language|language|english)", q):
+            if options:
+                return next((o for o in options if re.search(r"top|above average|8|9|very well|strong", o, re.I)),
+                            None)
+            return p.get("high_school_language") or "Above average"
+        if re.search(r"due to graduate|graduate soon|graduated recently|when.*graduat|have you graduated", q):
+            if options and any(re.search(r"\byes\b", o, re.I) for o in options):
+                return YES
+            return p.get("graduation_year") or YES
+        if re.search(r"(meet|travel|visit).*(in person|in-person|times? a year|annually|quarterly)", q):
+            return YES
+        if re.search(r"agree.*(own words|not (use|copy|utilise).*ai|original|honest|no plagiarism)", q):
+            return YES
 
         # --- current job ---------------------------------------------------
         if re.search(r"current (company|employer|organi[sz]ation)|currently working (with|at|for)|which company", q):

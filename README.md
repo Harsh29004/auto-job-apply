@@ -187,20 +187,47 @@ Add your LinkedIn login to `.env` (`LINKEDIN_EMAIL`, `LINKEDIN_PASSWORD`). All s
 - An application counts only when LinkedIn shows "application was sent". If Submit was clicked but no confirmation appeared, the job is marked `unconfirmed`. That still counts toward the limit and is never retried.
 - Keep `LINKEDIN_MAX_APPLIES` low (about 15). LinkedIn restricts accounts that apply too fast.
 
-## Remote and foreign jobs
+## Foreign / remote job boards (`foreign_jobs.py`)
 
-| `.env` setting | Effect |
+Collects remote jobs from **Remotive, RemoteOK, WeWorkRemotely, Jobicy, Arbeitnow and Himalayas** (6 sources), then applies using the company-site bot.
+
+| Command | What it does |
 |---|---|
-| `JOB_REMOTE_FIRST=true` | Naukri searches remote / work-from-home jobs first (`wfhType=2`) and applies to remote jobs before others |
-| `LINKEDIN_WORK_TYPE=2` | LinkedIn remote-only filter (`1` on-site, `2` remote, `3` hybrid; comma-separated, empty = all) |
-| `LINKEDIN_LOCATIONS=Worldwide, United States, …` | Search foreign markets as well as India |
+| `python foreign_jobs.py` | Collect new jobs from all sources (cached, safe to run often) |
+| `python foreign_jobs.py --apply --no-submit` | Fill forms on pending jobs but don't submit (preview) |
+| `python foreign_jobs.py --apply --max 5` | Apply to up to 5 jobs |
+| `python foreign_jobs.py --apply --retry` | Retry jobs previously marked manual/failed |
 
-The answer engine handles foreign jobs as follows:
-- It answers "Are you authorized to work in X?" and "Do you need visa sponsorship?" from `profile.work_authorized_countries`. If the question names no country, it uses the job's country.
-  - For a US job it answers "authorized: No" and "needs sponsorship: Yes".
-  - It never claims work rights you don't have.
-- For shift, time-zone and work-mode questions, it answers from `profile.shift_preference`. By default that is flexible (any shift), with remote preferred.
-- It answers "Rate yourself 1–10" questions with `profile.self_rating`.
+- Himalayas pages are behind Cloudflare, so the bot tries to find the same job on the company's **Ashby, Greenhouse or Lever** board. If found, it uses the direct link; otherwise the job goes on the manual list.
+- Jobs requiring US/UK citizenship, security clearance, or saying "unable to sponsor" are skipped.
+- All collected jobs are saved in `data/foreign_jobs.csv`.
+
+## Resume variants (`build_resumes.py`)
+
+Generates **6 role-tailored resumes** from a single YAML source file, each with a different summary, project selection and skill emphasis:
+
+| Variant | Target roles |
+|---|---|
+| `ai_ml_engineer` | AI/ML Engineer, Computer Vision, NLP |
+| `data_scientist` | Data Scientist, Data Analyst |
+| `genai_llm_engineer` | GenAI, LLM, Prompt Engineering |
+| `python_backend_developer` | Python, Django, FastAPI, Flask |
+| `computer_vision_engineer` | CV, Image Processing, Robotics |
+| `full_stack_developer` | React, MERN, Full Stack |
+
+```bash
+python build_resumes.py          # generates DOCX + PDF in resumes/
+```
+
+The bot automatically picks the best resume for each job based on the job title and description.
+
+## LinkedIn external jobs
+
+When `LINKEDIN_EASY_APPLY_ONLY=false` in `.env`, the LinkedIn bot also captures non-Easy-Apply jobs (company website links, Google Forms) and queues them for the company-site bot:
+
+```bash
+python linkedin_apply.py --max 5 --then-company 5   # Easy Apply 5, then 5 company-site jobs
+```
 
 ## Project structure
 
@@ -210,14 +237,18 @@ The answer engine handles foreign jobs as follows:
 | `config.yaml` | Your personal config (gitignored, never pushed) |
 | `.env.example` | Template for `.env` |
 | `.env` | Your Naukri login & SMTP credentials (gitignored, never pushed) |
-| `main.py` | Main bot entry point |
+| `main.py` | Naukri bot entry point |
 | `company_apply.py` | Company-site apply bot |
 | `linkedin_apply.py` | LinkedIn Easy Apply bot |
+| `foreign_jobs.py` | Foreign remote job collector + applier |
+| `build_resumes.py` | Resume generator (6 variants from YAML) |
 | `run_bot.bat` | Windows shortcut to run the bot |
 | `naukri_bot/` | Core bot modules (search, filter, apply, answer engine) |
+| `resumes/` | Generated resume PDFs (gitignored) |
 | `tests/` | Test suite |
 | `browser_profile/` | Saved login session (auto-created, gitignored) |
 | `data/` | Database, CSV exports, logs, debug screenshots (gitignored) |
+
 
 ## Important notes
 

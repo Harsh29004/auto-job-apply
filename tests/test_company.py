@@ -141,7 +141,7 @@ def test_google_form_flow(applier, server):
     assert ans["pyexp"] == "0-1 years"               # 1 year of Python -> first range containing 1
     assert ans["skills"] == ["Python", "React"]      # only skills on the resume are ticked
     assert ans["notice"] == "Immediate"
-    assert "Python Developer" in ans["why"]          # cover letter mentions the role
+    assert "ML" in ans["why"] or "Python" in ans["why"]  # why_join answer from config
     assert ans["linkedin"].startswith("https://www.linkedin.com/in/")
 
 
