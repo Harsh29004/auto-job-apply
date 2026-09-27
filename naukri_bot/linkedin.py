@@ -323,7 +323,7 @@ class LinkedInBot:
             fields = page.main_frame.evaluate(SCAN_JS, ".jobs-easy-apply-modal")
             if resume_chosen:
                 fields = [f for f in fields if f["type"] != "file"]
-            missing = self.forms.fill(page.main_frame, fields, job.title, job.company)
+            missing = self.forms.fill(page.main_frame, fields, job.title, job.company, root=".jobs-easy-apply-modal")
             missing = self.forms.still_missing(page.main_frame, fields, missing)
             if missing:
                 log.info("   unanswered: %s", missing)
@@ -413,6 +413,14 @@ class LinkedInBot:
     # ------------------------------------------------------------------ run
     def run(self, limit: int | None = None) -> dict:
         limit = limit or self.li["max_applies"]
+        if not self.dry_run:
+            # several runs a day must not add up to a restricted account
+            sent_today = self.db.applied_today(("applied", "unconfirmed"))
+            left_today = int(self.li.get("max_applies_per_day", 30)) - sent_today
+            if left_today <= 0:
+                log.warning("LinkedIn daily cap reached (%d sent today). Run again tomorrow.", sent_today)
+                return {}
+            limit = min(limit, left_today)
         if not self.login():
             raise SystemExit("LinkedIn login failed - fill LINKEDIN_EMAIL / LINKEDIN_PASSWORD in .env "
                              "or log in manually in the opened browser.")
@@ -467,7 +475,8 @@ class LinkedInBot:
                             job.apply_url, job.external = detail, True
                             new = self.queue.save_external(job, score, source="linkedin")
                             detail = ("queued for company_apply.py: " if new else "already queued: ") + detail[:120]
-                        if not self.dry_run or status != "planned":
+                        # a dry run only looks: recording its outcome would skip the job in every real run
+                        if not self.dry_run:
                             self.db.record(job, status, detail or reason, score)
                         stats[status] = stats.get(status, 0) + 1
                         log.info(" -> %s %s", status.upper(), detail)

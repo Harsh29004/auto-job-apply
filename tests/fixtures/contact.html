@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Contact info</title>
+<!-- Like LinkedIn's Easy Apply contact step: choosing the phone country code re-renders the phone box, and
+     answering a question re-renders the fields after it (new elements, without the bot's data-nb-idx tags). -->
+<form id="f">
+  <label for="ef-phoneNumber-country">Phone country code</label>
+  <select id="ef-phoneNumber-country" required>
+    <option>Select an option</option><option>American Samoa (+1)</option><option>India (+91)</option>
+  </select>
+  <div id="phone"></div>
+  <fieldset id="q"><legend>Are you willing to relocate?</legend>
+    <label><input type="radio" name="reloc" value="y" required> Yes</label>
+    <label><input type="radio" name="reloc" value="n"> No</label>
+  </fieldset>
+  <div id="rest"></div>
+</form>
+<script>
+window.changes = 0;
+const cc = document.getElementById('ef-phoneNumber-country');
+if (!location.search.includes('cc=none')) cc.value = 'India (+91)';  // prefilled, like LinkedIn
+const phone = () => document.getElementById('phone').innerHTML =
+  '<label for="ef-phoneNumber-nationalNumber">Mobile phone number</label>' +
+  '<input id="ef-phoneNumber-nationalNumber" type="text" required>';
+const rest = () => document.getElementById('rest').innerHTML =
+  '<label for="city">City</label><input id="city" name="city" required>';
+phone(); rest();
+cc.addEventListener('change', () => { window.changes++; phone(); });
+document.getElementById('q').addEventListener('change', rest);
+</script>

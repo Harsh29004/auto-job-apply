@@ -23,6 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from urllib.parse import quote
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -39,7 +40,8 @@ ALL_SOURCES = ["himalayas", "remotive", "remoteok", "jobicy", "weworkremotely", 
 
 OPEN_LOCATION = re.compile(
     r"worldwide|anywhere|global|international|all countries|any country|no (location )?restriction|"
-    r"work from anywhere|\bapac\b|asia|asia[- ]pacific|\bindia\b|remote$|^remote\b(?!.*\b(us|usa|uk|eu|europe|"
+    r"work from anywhere|\bapac\b|asia|asia[- ]pacific|\bindia\b|^\W*(fully |100% )?remote\W*$|"
+    r"^remote\b(?!.*\b(us|usa|uk|eu|europe|"
     r"canada|americas|latam|emea)\b)", re.I)
 RESTRICTED_TEXT = re.compile(
     r"(must|should|need to|required to) (be |currently )?(be )?(based|located|living|reside|residing|live)( in| within)? "
@@ -105,12 +107,18 @@ class Fetcher:
         age = max_age if max_age is not None else self.max_age
         if path.exists() and time.time() - path.stat().st_mtime < age:
             raw = path.read_bytes()
+            return json.loads(raw) if as_json else raw
+        req = urllib.request.Request(url, headers=UA)
+        raw = urllib.request.urlopen(req, timeout=45).read()
+        time.sleep(1)  # be gentle
+        # parse before caching: a rate-limit / error page must not be served from the cache for hours
+        if as_json:
+            data = json.loads(raw)
         else:
-            req = urllib.request.Request(url, headers=UA)
-            raw = urllib.request.urlopen(req, timeout=45).read()
-            path.write_bytes(raw)
-            time.sleep(1)  # be gentle
-        return json.loads(raw) if as_json else raw
+            ET.fromstring(raw)
+            data = raw
+        path.write_bytes(raw)
+        return data
 
     def get_or_none(self, url: str, max_age: float = 24 * 3600):
         """Like get(), but a 404/410 is cached as None (company has no board of that kind)."""
@@ -146,15 +154,15 @@ def board_postings(f: Fetcher, kind: str, name: str) -> list[tuple[str, str]]:
     """(title, apply url) for every posting on a company's public ATS board ([] if it has none)."""
     try:
         if kind == "ashby":
-            js = f.get_or_none(f"https://api.ashbyhq.com/posting-api/job-board/{name}")
+            js = f.get_or_none(f"https://api.ashbyhq.com/posting-api/job-board/{quote(name)}")
             return [(j["title"], j.get("applyUrl") or j["jobUrl"]) for j in (js or {}).get("jobs") or []]
         if kind == "greenhouse":
-            js = f.get_or_none(f"https://boards-api.greenhouse.io/v1/boards/{name}/jobs")
+            js = f.get_or_none(f"https://boards-api.greenhouse.io/v1/boards/{quote(name)}/jobs")
             return [(j["title"], j["absolute_url"]) for j in (js or {}).get("jobs") or []]
         if kind == "lever":
-            js = f.get_or_none(f"https://api.lever.co/v0/postings/{name}?mode=json")
+            js = f.get_or_none(f"https://api.lever.co/v0/postings/{quote(name)}?mode=json")
             return [(j["text"], j.get("applyUrl") or j["hostedUrl"]) for j in js or [] if isinstance(j, dict)]
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, TypeError):
         return []
     return []
 
@@ -270,25 +278,25 @@ def fetch_ats_boards(f: Fetcher, boards: list[str]) -> list[ForeignJob]:
         kind, name = kind.strip().lower(), name.strip()
         try:
             if kind == "greenhouse":
-                js = f.get(f"https://boards-api.greenhouse.io/v1/boards/{name}/jobs?content=true")
+                js = f.get(f"https://boards-api.greenhouse.io/v1/boards/{quote(name)}/jobs?content=true")
                 for j in js.get("jobs") or []:
                     out.append(ForeignJob("greenhouse", f"{name}-{j['id']}", j["title"], j.get("company_name") or name,
                                           j["absolute_url"], j["absolute_url"], (j.get("location") or {}).get("name", ""),
                                           text_of(j.get("content", ""))))
             elif kind == "lever":
-                js = f.get(f"https://api.lever.co/v0/postings/{name}?mode=json")
+                js = f.get(f"https://api.lever.co/v0/postings/{quote(name)}?mode=json")
                 for j in js if isinstance(js, list) else []:
                     cat = j.get("categories") or {}
                     out.append(ForeignJob("lever", j["id"], j["text"], name, j["hostedUrl"], j.get("applyUrl") or j["hostedUrl"],
                                           f"{cat.get('location', '')} {j.get('workplaceType', '')}".strip(),
                                           j.get("descriptionPlain", "")))
             elif kind == "ashby":
-                js = f.get(f"https://api.ashbyhq.com/posting-api/job-board/{name}")
+                js = f.get(f"https://api.ashbyhq.com/posting-api/job-board/{quote(name)}")
                 for j in js.get("jobs") or []:
                     loc = j.get("location", "") + (" (remote)" if j.get("isRemote") else "")
                     out.append(ForeignJob("ashby", j["id"], j["title"], name, j["jobUrl"], j.get("applyUrl") or j["jobUrl"],
                                           loc, j.get("descriptionPlain", "")))
-        except (OSError, ValueError, KeyError) as e:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
             log.warning("board %s failed: %s", spec, e)
     return out
 
@@ -378,7 +386,8 @@ def collect(cfg: Config, db: Storage, sources: list[str] | None = None, opts: di
             else:
                 log.warning("unknown source %s", src)
                 continue
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, ET.ParseError) as e:
+            # one board changing its API format must not stop the others
             log.warning("%s: fetch failed (%s)", src, str(e)[:120])
             continue
         log.info("%-15s %4d jobs fetched", src, len(jobs))

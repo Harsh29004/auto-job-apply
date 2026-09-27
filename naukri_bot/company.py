@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from playwright.sync_api import Error as PWError
 from playwright.sync_api import Frame, Page, sync_playwright
 
-from .answers import Answerer
+from .answers import DIAL_CODE_FIELD, Answerer, is_phone_question, norm, phone_format
 from .ats import detect_ats, needs_login
 from .config import Config
 from .gforms import GoogleFormFlow, is_google_form
@@ -41,6 +41,9 @@ APPLY_TEXT = re.compile(r"^\s*(apply|apply now|apply here|apply online|apply aga
                         r"(site|website|page)|apply externally|apply for (this|the)? ?(job|position|role|opening)|"
                         r"apply with resume|submit (your )?(resume|cv|application)|i'?m interested|send (your )?(resume|cv))\s*!?\s*$", re.I)
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# job boards' own addresses (support, alerts ...) are never where a company wants your resume
+BOARD_DOMAINS = re.compile(r"(^|\.)(naukri|linkedin|himalayas|remotive|remoteok|jobicy|weworkremotely|arbeitnow|"
+                           r"indeed|glassdoor|google|example)\.[a-z.]+$", re.I)
 
 # Collects every fillable field in a frame and tags it with data-nb-idx so Python can find it again.
 SCAN_JS = r"""
@@ -72,6 +75,9 @@ SCAN_JS = r"""
     }
     return clean(t).slice(0, 200);
   };
+  // tags from an earlier scan may sit on elements this scan skips - they would make a tag point at two elements
+  for (const r of new Set([document, root]))
+    for (const e of r.querySelectorAll('[data-nb-idx]')) e.removeAttribute('data-nb-idx');
   const out = [];
   let idx = 0;
   const groups = {};
@@ -90,7 +96,9 @@ SCAN_JS = r"""
     e.setAttribute('data-nb-idx', String(idx));
     const required = e.required || e.getAttribute('aria-required') === 'true';
     const base = {idx, tag: e.tagName.toLowerCase(), type, name: e.name || e.id || '',
-                  placeholder: e.getAttribute('placeholder') || '', required, accept: e.getAttribute('accept') || ''};
+                  placeholder: e.getAttribute('placeholder') || '', required, accept: e.getAttribute('accept') || '',
+                  maxlength: e.maxLength > 0 ? e.maxLength : 0, pattern: e.getAttribute('pattern') || '',
+                  autocomplete: e.getAttribute('autocomplete') || ''};
     if (type === 'radio' || type === 'checkbox') {
       const key = type + ':' + (e.name || ('_' + idx));
       const optLabel = clean((e.labels && e.labels[0] && e.labels[0].innerText) || (e.closest('label') || {}).innerText || e.value);
@@ -115,7 +123,10 @@ SCAN_JS = r"""
     } else {
       const f = {...base, label: labelOf(e), options: []};
       if (combo) f.type = 'combo';
-      if (e.tagName === 'SELECT') f.options = [...e.options].map(o => clean(o.text)).filter(Boolean);
+      if (e.tagName === 'SELECT') {
+        f.options = [...e.options].map(o => clean(o.text)).filter(Boolean);
+        f.selected = e.selectedIndex >= 0 ? clean(e.options[e.selectedIndex].text) : '';
+      }
       if (/\*/.test(f.label)) f.required = true;
       f.value = e.value || '';
       out.push(f);
@@ -181,6 +192,17 @@ FIND_APPLY_JS = r"""
 """
 
 
+def is_web_url(url: str) -> bool:
+    """Only http(s) links are opened or written to the manual page (never javascript:, file:, data: ...)."""
+    return urlparse(url or "").scheme.lower() in ("http", "https")
+
+
+def success_is_new(before: str, after: str) -> bool:
+    """A confirmation message that was not already on the page before submitting (career pages
+    often say "we will review your application" above the form)."""
+    return len(SUCCESS_TEXT.findall(after)) > len(SUCCESS_TEXT.findall(before))
+
+
 def split_name(full: str) -> tuple[str, str]:
     parts = full.split()
     return (parts[0], parts[-1]) if len(parts) > 1 else (full, "")
@@ -215,6 +237,7 @@ class FieldFiller:
         self.c = cfg.company_apply
         self.answerer = answerer
         self.source = ""  # set per job by CompanyApplier
+        self.separate_country_code = False  # set per form: the calling code has its own dropdown / box
 
     def heard_about(self, options: list[str] | None = None) -> str | None:
         name = self.SOURCE_NAMES.get(self.source) or self.c.get("heard_about_us") or "Job board"
@@ -228,7 +251,12 @@ class FieldFiller:
         return None
 
     def cover_letter(self, title: str, company: str) -> str:
-        return (self.c.get("cover_letter") or "").format(title=title, company=company or "your company").strip()
+        template = self.c.get("cover_letter") or ""
+        try:
+            return template.format(title=title, company=company or "your company").strip()
+        except (KeyError, IndexError, ValueError):  # stray { } in the template
+            log.warning("cover_letter in config.yaml has braces other than {title} / {company} - sent as written")
+            return template.strip()
 
     def value_for(self, field: dict, title: str, company: str):
         """Return a value (str) for a text/select field, or None if unknown.
@@ -256,7 +284,7 @@ class FieldFiller:
             (r"last ?name|surname|family name|\blname\b", last),
             (r"middle ?name", ""),
             (r"e-?mail", p.get("email")),
-            (r"phone|mobile|contact (no|number)|whatsapp|\btel\b", p.get("phone")),
+            (lambda: is_phone_question(label or field.get("placeholder") or ""), "__PHONE__"),
             (r"linked ?in", p.get("linkedin") or None),
             (r"git ?hub|portfolio|personal (site|website|url)|website|other links|links you may have", p.get("github") or None),
             (r"how did you (hear|find|come)|where did you (hear|find|see)|referr?al source", "__SOURCE__"),
@@ -265,7 +293,11 @@ class FieldFiller:
         # field names - short labels only
         short_rules = [
             (r"father|mother|guardian|spouse", None),
-            (r"country ?code|\bisd\b|dial code", "+91"),
+            (DIAL_CODE_FIELD, "__DIAL__"),
+            # "Phone: [+91 v] [__________]" - the code dropdown shares the number's label
+            (lambda: field.get("tag") == "select" and is_phone_question(label) and any(
+                re.search(r"\+\s?\d", o) for o in field.get("options") or []), "__DIAL__"),
+            (r"phone (device )?type|type of phone", "Mobile"),
             (r"\bsource\b|how did you (hear|find)|where did you (hear|find|see)", "__SOURCE__"),
             (r"message|additional (info|information)|comments?|anything else|motivation|tell us|about (you|yourself)",
              self.cover_letter(title, company)),
@@ -291,7 +323,11 @@ class FieldFiller:
         ]
         rules = (strong if textual else []) + (short_rules if short else [])
         for pattern, value in rules:
-            if re.search(pattern, text):
+            if pattern() if callable(pattern) else re.search(pattern, text):
+                if value == "__PHONE__":
+                    return self.phone_value(field)
+                if value == "__DIAL__":
+                    return self.dial_code_value(field.get("options") if field.get("tag") == "select" else None)
                 if value == "__PREFER_NOT__":
                     return Answerer._decline(field.get("options"))
                 if value == "__TITLE__":
@@ -304,9 +340,62 @@ class FieldFiller:
         # generic recruiter-style question (experience, notice, CTC, degree ...)
         options = [o for o in field.get("options") or [] if not re.match(r"^(select|choose|--|please)", o, re.I)]
         label = field.get("label") or field.get("placeholder") or field.get("name")
-        if not label:
+        answer = self.answerer.answer(label, options or None) if label else None
+        if answer is None and textual and self.phone_input(field):
+            return self.phone_value(field)  # e.g. LinkedIn's phone box in a language the rules can't read
+        return answer
+
+    # ------------------------------------------------------------------ phone
+    @staticmethod
+    def phone_input(field: dict) -> bool:
+        """The page itself marks this box as a phone number (autocomplete=tel, id 'phoneNumber'), or it is
+        type=tel with a label we can't read at all."""
+        ident = (field.get("name") or "").lower()
+        marked = (field.get("autocomplete") or "").lower().startswith("tel") or re.search(
+            r"phone|mobile|whats_?app|(^|[^a-z])(tel|cell)([^a-z]|$)", ident) or (
+            field.get("type") == "tel" and not re.search(r"[a-z]", (field.get("label") or "").lower()))
+        other = re.search(r"(^|[^a-z])(ext|extension|pin|otp)([^a-z]|$)|code|verif|type|country|emergency|referen|"
+                          r"father|mother|guardian|spouse|parent|fax", f"{ident} {field.get('label') or ''}".lower())
+        return bool(marked) and not other
+
+    def job_abroad(self) -> bool:
+        loc = self.answerer.job_location or ""
+        return bool(loc.strip()) and not re.search(rf"\b{re.escape(self.p.get('country') or 'India')}\b", loc, re.I)
+
+    def phone_value(self, field: dict) -> str | None:
+        """Your number written the way this box wants it."""
+        raw, national, intl = self.answerer.phone_numbers()
+        if not raw:
             return None
-        return self.answerer.answer(label, options or None)
+        ident = re.sub(r"[^a-z]", "", (field.get("name") or "").lower())
+        placeholder = (field.get("placeholder") or "").strip()
+        fmt = phone_format(f"{field.get('label') or ''} {placeholder}")
+        if not fmt and ("nationalnumber" in ident or self.separate_country_code):
+            fmt = "national"  # the calling code is chosen in its own dropdown (LinkedIn, Workday ...)
+        if not fmt and (placeholder.startswith("+") or self.job_abroad()):
+            fmt = "intl"  # abroad a bare 10-digit number reads as a local one (+1 972 ... in the US)
+        value = national if fmt == "national" else intl if fmt == "intl" else raw
+        if field.get("type") == "number" or "numeric" in ident:
+            value = re.sub(r"\D", "", value)
+        maxlen, pattern = int(field.get("maxlength") or 0), field.get("pattern") or ""
+
+        def fits(v: str) -> bool:
+            try:
+                return (not maxlen or len(v) <= maxlen) and (not pattern or re.fullmatch(pattern, v) is not None)
+            except re.error:
+                return not maxlen or len(v) <= maxlen
+        return next((v for v in (value, value.replace(" ", ""), national, re.sub(r"\D", "", intl)) if v and fits(v)),
+                    value)
+
+    def dial_code_value(self, options: list[str] | None):
+        """'+91' for a text box; for a dropdown the option with your code ('India (+91)', '+91', 'IN +91')."""
+        code = self.answerer.dial_code()
+        if not options:
+            return f"+{code}" if code else None
+        country = self.p.get("country") or "India"
+        hits = [o for o in options if code and (re.search(rf"\+\s*{code}(?!\d)", o) or o.strip() == code)]
+        named = [o for o in hits if self.answerer.match_option(country, [o])]  # "+1": United States, not Samoa
+        return (named or hits or [None])[0] or self.answerer.match_option(country, options)
 
 
     GENERIC_WORDS = {"engineer", "developer", "senior", "junior", "associate", "intern", "trainee", "executive",
@@ -481,9 +570,14 @@ class CompanyApplier:
         url = job.get("apply_url") or ""
         if not url:
             return "manual", "no apply link"
+        if not is_web_url(url):
+            return "manual", f"not a web link: {url[:80]}"
         self.resume = self.resumes.pick(job.get("title", ""), job.get("description") or "") or self.default_resume
-        self.answerer.job_location = job.get("location") or ""
         self.filler.source = job.get("source") or "naukri"
+        location = job.get("location") or ""
+        if self.filler.source == "naukri" and location and not Answerer.COUNTRY_RE.search(location):
+            location += ", India"  # Naukri lists cities only ("Pune")
+        self.answerer.job_location = location
         ats = detect_ats(url)
         if needs_login(ats):
             return "manual", f"{ats} needs an account - apply manually"
@@ -528,7 +622,8 @@ class CompanyApplier:
                 return "manual", info
         # no form - maybe the page just lists an email address
         emails = [e for e in EMAIL_RE.findall(self.body_text())
-                  if re.match(r"(hr|career|careers|jobs|job|recruit|talent|hiring|resume|cv)", e.lower())]
+                  if re.match(r"(hr|hrd|hrteam|careers?|jobs?|recruit\w*|talent\w*|hiring|resumes?|cv)[._@+-]", e.lower())
+                  and not BOARD_DOMAINS.search(e.split("@")[1])]
         if emails:
             return self.send_email(emails[0], job)
         return "manual", "no application form found"
@@ -592,12 +687,15 @@ class CompanyApplier:
                 return "manual", f"could not fill required: {', '.join(missing)[:200]}"
             if self.assist_seconds:
                 return self.wait_for_user(job)
+            before, url_before = self.body_text(), self.page.url
             clicked = self.click_submit(frame)
             if not clicked:
                 return "manual", "submit button not found"
             self.page.wait_for_timeout(5000)
             text = self.body_text()
-            if SUCCESS_TEXT.search(text) or re.search(r"thank|success|confirm|submitted", self.page.url, re.I):
+            url_done = re.compile(r"thank|success|confirm|submitted", re.I)
+            if success_is_new(before, text) or (
+                    self.page.url != url_before and url_done.search(self.page.url) and not url_done.search(url_before)):
                 self.snapshot(f"applied_{job['job_id']}")
                 return "applied", "company site form"
             if self.captcha_challenge_shown():
@@ -637,7 +735,7 @@ class CompanyApplier:
             idx = (f.get("optionIdx") or [f["idx"]])[0]
             try:
                 ok = frame.evaluate(
-                    """(i) => {
+                    r"""(i) => {
                        const roots = [document];
                        for (let k = 0; k < roots.length; k++)
                          for (const el of roots[k].querySelectorAll('*')) if (el.shadowRoot) roots.push(el.shadowRoot);
@@ -662,11 +760,18 @@ class CompanyApplier:
                 keep.append(m)
         return keep
 
-    def fill(self, frame: Frame, fields: list[dict], title: str, company: str) -> list[str]:
+    def fill(self, frame: Frame, fields: list[dict], title: str, company: str, root: str | None = None) -> list[str]:
+        """Fill every field; returns the labels of required fields left empty. `root` = the selector SCAN_JS
+        was run with (LinkedIn: the Easy Apply dialog)."""
         missing = []
+        # the calling code has its own dropdown (LinkedIn "Phone country code"): type the number without it
+        self.filler.separate_country_code = any(
+            DIAL_CODE_FIELD.search(f"{f.get('label') or ''} {f.get('name') or ''}") for f in fields)
         for f in fields:
             label = (f.get("label") or f.get("placeholder") or f.get("name") or "")[:80]
             try:
+                if not self._retag(frame, fields, f, root):
+                    continue
                 if f["type"] == "file":
                     text = (label + " " + f.get("name", "")).lower()
                     if re.search(r"cover|photo|picture|image|avatar|autofill|auto-fill|parse", text) and \
@@ -700,6 +805,8 @@ class CompanyApplier:
                     continue
                 loc = frame.locator(f"[data-nb-idx='{f['idx']}']")
                 if f["tag"] == "select":
+                    if norm(f.get("selected")) == norm(str(value)):
+                        continue  # already chosen - choosing it again makes LinkedIn re-render the form
                     loc.select_option(label=str(value))
                 else:
                     if f["type"] == "number" and not re.fullmatch(r"-?\d+(\.\d+)?", str(value)):
@@ -707,7 +814,9 @@ class CompanyApplier:
                             missing.append(label)
                         continue
                     loc.fill(str(value))
-                    if loc.get_attribute("role") == "combobox" or loc.get_attribute("aria-autocomplete"):
+                    phone = is_phone_question(label) or self.filler.phone_input(f)
+                    if not phone and (loc.get_attribute("role") == "combobox" or
+                                      loc.get_attribute("aria-autocomplete") not in (None, "", "none")):
                         frame.page.wait_for_timeout(1500)  # typeahead (e.g. city): take the first suggestion
                         opts = frame.page.locator("[role=listbox] [role=option], .basic-typeahead__selectable")
                         if opts.count() and opts.first.is_visible():
@@ -718,6 +827,30 @@ class CompanyApplier:
                 if f["required"]:
                     missing.append(label)
         return missing
+
+    @staticmethod
+    def _retag(frame: Frame, fields: list[dict], f: dict, root: str | None) -> bool:
+        """Pages like LinkedIn re-render the form after an answer, and the new elements lack our data-nb-idx
+        tags. Then scan again and point every field at its new element. False = this field is gone."""
+        if f.get("gone"):
+            return False
+        if frame.locator(f"[data-nb-idx='{(f.get('optionIdx') or [f['idx']])[0]}']").count():
+            return True
+        key = lambda g: (g.get("tag"), g.get("type"), g.get("name"), g.get("label"))  # noqa: E731
+        fresh: dict[tuple, list[dict]] = {}
+        for g in frame.evaluate(SCAN_JS, root):
+            fresh.setdefault(key(g), []).append(g)
+        for old in fields:
+            same = fresh.get(key(old))
+            if same:
+                g = same.pop(0)
+                old.update(idx=g["idx"], optionIdx=g.get("optionIdx") or [], value=g.get("value", ""),
+                           selected=g.get("selected", ""))
+            else:
+                old.update(idx=-1, optionIdx=[], gone=True)  # never point at another field's element
+        if f.get("gone"):
+            log.info("   field went away after an earlier answer: %s", (f.get("label") or f.get("name") or "")[:60])
+        return not f.get("gone")
 
     @staticmethod
     def _read_options(frame: Frame, tries: int = 4) -> list[dict]:
@@ -778,6 +911,12 @@ class CompanyApplier:
             el.click(force=True, timeout=4000)
         opt = self._choose(f, self._read_options(frame), title, company)
         typeable = f["tag"] == "input" and not el.evaluate("e => e.readOnly")
+        if opt is None and typeable and (is_phone_question(label) or self.filler.phone_input(f)):
+            number = self.filler.phone_value(dict(f, type="text"))
+            if number:  # a phone box with autocomplete switched on, not a real dropdown: just type it
+                el.fill(number)
+                log.info("   %s = %s", label[:50], number)
+                return
         if opt is None and typeable:
             wanted = self.filler.value_for(dict(f, tag="input", type="text", options=[]), title, company)
             if wanted:
@@ -881,10 +1020,11 @@ class CompanyApplier:
     def wait_for_user(self, job: dict) -> tuple[str, str]:
         log.info("   ASSIST: check the form in the browser and submit it yourself (waiting %ss)...", self.assist_seconds)
         deadline = time.time() + self.assist_seconds
+        before = self.body_text()
         while time.time() < deadline:
             try:
                 self.page.wait_for_timeout(2000)
-                if SUCCESS_TEXT.search(self.body_text()):
+                if success_is_new(before, self.body_text()):
                     return "applied", "submitted by you (assist mode)"
             except PWError:
                 break
@@ -920,8 +1060,8 @@ class CompanyApplier:
         log.info("%d company-site jobs to process", len(jobs))
         stats: dict[str, int] = {}
         for job in jobs:
-            log.info("[%s] %s @ %s  (%s)", job.get("ats"), job["title"], job["company"], job["apply_url"][:90])
-            self.page = self.ctx.pages[0]
+            log.info("[%s] %s @ %s  (%s)", job.get("ats"), job["title"], job["company"], (job["apply_url"] or "")[:90])
+            self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
             for extra in self.ctx.pages[1:]:
                 extra.close()
             try:
@@ -929,6 +1069,9 @@ class CompanyApplier:
             except PWError as e:
                 shot = self.snapshot(f"error_{job['job_id']}")
                 status, detail = "failed", f"{str(e).splitlines()[0][:150]} ({shot})"
+            except Exception as e:  # noqa: BLE001 - one odd page must not stop the whole run
+                log.exception("   unexpected error")
+                status, detail = "failed", f"bot error: {type(e).__name__}: {str(e)[:150]}"
             if status == "filled" or not self.submit:
                 # preview run (--no-submit): report only, keep the job pending for the real run
                 log.info(" -> %s (preview, not saved) %s", status.upper(), detail)
@@ -944,7 +1087,8 @@ def build_email(cfg: Config, to: str, job: dict, body: str, resume: Path) -> Ema
     msg = EmailMessage()
     msg["From"] = f"{cfg.profile.get('name', '')} <{cfg.smtp_email}>"
     msg["To"] = to
-    msg["Subject"] = f"Application for {job.get('title', 'the open role')} - {cfg.profile.get('name', '')}"
+    title = re.sub(r"\s+", " ", str(job.get("title") or "")).strip()  # scraped: no CR/LF in a header
+    msg["Subject"] = f"Application for {title or 'the open role'} - {cfg.profile.get('name', '')}"
     msg.set_content(body)
     ctype = mimetypes.guess_type(resume.name)[0] or "application/pdf"
     maintype, subtype = ctype.split("/", 1)
@@ -956,13 +1100,14 @@ def write_manual_page(db: Storage, path: Path) -> int:
     """HTML list of jobs you need to finish yourself, with clickable links."""
     rows = db.external_jobs(("manual", "failed", "unconfirmed", "pending"))
     items = []
+    link = lambda u: html.escape(u) if is_web_url(u) else "#"  # noqa: E731  (scraped: never javascript:)
     for r in rows:
         items.append(
             f"<tr><td>{html.escape(r['status'])}</td><td><b>{html.escape(r['title'] or '')}</b><br>"
             f"{html.escape(r['company'] or '')}<br><small>{html.escape(r['location'] or '')} · "
             f"{html.escape(r['experience'] or '')}</small></td><td>{html.escape(r['ats'] or '')}</td>"
-            f"<td><a href='{html.escape(r['apply_url'] or r['naukri_url'] or '')}' target=_blank>Open apply page</a><br>"
-            f"<a href='{html.escape(r['naukri_url'] or '')}' target=_blank><small>Naukri post</small></a></td>"
+            f"<td><a href='{link(r['apply_url'] or r['naukri_url'] or '')}' target=_blank rel=noopener>Open apply page</a><br>"
+            f"<a href='{link(r['naukri_url'] or '')}' target=_blank rel=noopener><small>Job post</small></a></td>"
             f"<td><small>{html.escape(r['detail'] or '')}</small></td></tr>")
     path.write_text(
         "<!doctype html><meta charset=utf-8><title>Manual applications</title>"

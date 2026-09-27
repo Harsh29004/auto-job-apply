@@ -9,7 +9,7 @@ import pytest
 
 from naukri_bot.answers import Answerer
 from naukri_bot.ats import detect_ats, needs_login
-from naukri_bot.company import CompanyApplier, FieldFiller, build_email, email_from_href, split_name
+from naukri_bot.company import SCAN_JS, CompanyApplier, FieldFiller, build_email, email_from_href, split_name
 from naukri_bot.storage import Storage
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -168,3 +168,18 @@ def test_tailored_resume_is_uploaded(applier, server):
     if "genai_llm_engineer" in variants:  # resumes built with build_resumes.py
         assert applier.resume.parent.name == "genai_llm_engineer"
     assert applier.resume.exists()
+
+
+@pytest.mark.parametrize("query,changes", [("", 0), ("?cc=none", 1)])
+def test_linkedin_style_contact_step(applier, server, query, changes):
+    """LinkedIn re-renders the phone box when the country code changes, and later fields after an answer.
+    The phone must still be filled, the code must be India, and a dropdown that is already right is left alone."""
+    applier.open(server + "/contact.html" + query)
+    frame = applier.page.main_frame
+    missing = applier.fill(frame, frame.evaluate(SCAN_JS, None), "AI Engineer", "Acme")
+    state = applier.page.evaluate("""() => ({cc: document.getElementById('ef-phoneNumber-country').value,
+        phone: document.getElementById('ef-phoneNumber-nationalNumber').value,
+        city: document.getElementById('city').value, changes: window.changes})""")
+    assert missing == [] and state["cc"] == "India (+91)" and state["changes"] == changes
+    assert state["phone"] == applier.answerer.phone_numbers()[1]  # national number: the code has its own dropdown
+    assert state["city"]

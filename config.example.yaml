@@ -127,6 +127,7 @@ skills:
 
 apply:
   max_applies_per_run: 25    # Naukri allows ~50 applies per day
+  max_applies_per_day: 50    # total across all runs on the same day
   delay_seconds: [4, 9]      # random wait between jobs
   headless: false
 
@@ -135,7 +136,8 @@ apply:
 profile:
   name: Your Full Name
   email: your_email@example.com
-  phone: "9999999999"
+  phone: "9999999999"       # 10 digits; "+91" is added where a form asks for the country code or the job is abroad
+  # phone_country_code: "+91"   # optional - taken from `country` below when not set
   current_location: Your City
   state: Your State
   preferred_location: Anywhere in India / Remote

@@ -67,6 +67,7 @@ ENV_INTS = {
     "JOB_MAX_MIN_EXPERIENCE": ("filters", "max_min_experience"),
     "JOB_MIN_SCORE": ("filters", "min_score"),
     "MAX_APPLIES_PER_RUN": ("apply", "max_applies_per_run"),
+    "MAX_APPLIES_PER_DAY": ("apply", "max_applies_per_day"),
 }
 
 
@@ -102,6 +103,7 @@ def load_config(path: str | Path | None = None, env_path: str | Path | None = No
 
     apply = raw.get("apply") or {}
     apply.setdefault("max_applies_per_run", 25)
+    apply.setdefault("max_applies_per_day", 50)
     apply.setdefault("delay_seconds", [4, 9])
     apply.setdefault("headless", False)
 
@@ -129,6 +131,7 @@ def load_config(path: str | Path | None = None, env_path: str | Path | None = No
         "easy_apply_only": (os.getenv("LINKEDIN_EASY_APPLY_ONLY") or "false").strip().lower() in ("1", "true", "yes"),
         "pages_per_search": env_int("LINKEDIN_PAGES_PER_SEARCH") or 2,
         "max_applies": env_int("LINKEDIN_MAX_APPLIES") or 15,
+        "max_applies_per_day": env_int("LINKEDIN_MAX_APPLIES_PER_DAY") or 30,
     }
 
     truthy = lambda name, default: (os.getenv(name) or str(default)).strip().lower() in ("1", "true", "yes")  # noqa: E731

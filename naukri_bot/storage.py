@@ -69,10 +69,11 @@ class Storage:
         )
         self.conn.commit()
 
-    def applied_today(self) -> int:
+    def applied_today(self, statuses: tuple[str, ...] = ("applied",)) -> int:
         today = datetime.now().date().isoformat()
         return self.conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE status='applied' AND updated_at LIKE ?", (today + "%",)
+            f"SELECT COUNT(*) FROM jobs WHERE status IN ({','.join('?' * len(statuses))}) AND updated_at LIKE ?",
+            (*statuses, today + "%"),
         ).fetchone()[0]
 
     def counts(self) -> dict[str, int]:

@@ -37,6 +37,53 @@ def is_number(value) -> bool:
         return False
 
 
+# ------------------------------------------------------------------ phone numbers
+# Calling code for profile.country (profile.phone_country_code overrides it).
+DIAL_CODES = {"india": "91", "united states": "1", "usa": "1", "canada": "1", "united kingdom": "44", "uk": "44",
+              "germany": "49", "france": "33", "netherlands": "31", "ireland": "353", "australia": "61",
+              "singapore": "65", "united arab emirates": "971", "uae": "971", "nepal": "977", "bangladesh": "880"}
+# A dropdown / box for the calling code itself ("Phone country code", Swedish "landskod", German "Vorwahl").
+DIAL_CODE_FIELD = re.compile(r"country ?code|dial(l?ing)? ?code|calling code|phone ?code|\bisd\b|landskod|vorwahl|"
+                             r"indicatif", re.I)
+_NUM = r"(?:no|num|number|nr|nos|#|nummer|numero|número|numéro|n°)"
+_PHONE = (r"(?:mobile ?phone|cell ?phone|mobile|phone|telephone|tel|mob|cell|ph|whats ?app|telefon\w*|telefoon\w*|"
+          r"t[eé]l[eé]phone|tel[eé]fono|telefone|handy(?:nummer)?|celular|cellulare|m[oó]vil|mobil(?:nummer)?|"
+          r"mobiltelefon\w*)")
+# The label NAMES a phone field: "Mobile No.", "Ph No", "Your WhatsApp number for updates", "Telefonnummer",
+# "Número de teléfono". Not: "Mobile app development experience", "Joining WhatsApp is mandatory",
+# "Do you have a WhatsApp number?", "Father's mobile number", "Emergency contact number".
+PHONE_LABEL = re.compile(
+    r"^(?:(?:please|kindly|enter|share|provide|give|mention|add|type|write|confirm|us|what|is|what's|your|the|a|"
+    r"candidate'?s?|applicant'?s?|contact|primary|secondary|alternate|alternative|personal|current|valid|active|"
+    r"best|preferred|registered|10[- ]?digits?|indian)\s+)*"
+    rf"(?:(?:{_NUM}\s+(?:de|di|of)\s+)?{_PHONE}(?:\s*(?:/|,|&|or|and)\s*{_PHONE})*\.?(?:\s*(?P<num>{_NUM})\.?)?"
+    rf"|contact\.?\s*(?P<cnum>{_NUM})\.?)"
+    r"(?P<tail>\s+(?:for|where|on which|at which|through which|so|to|that|we can|in case|with|without|including|"
+    r"incl)\b.*)?$")
+
+
+def is_phone_question(text: str) -> bool:
+    """True when a label / question asks for your phone number (see PHONE_LABEL)."""
+    t = norm(re.sub(r"\([^)]*\)|\[[^\]]*\]|[✱*:?!]", " ", text or ""))
+    t = re.sub(r"\s*[-–|]?\s*\b(optional|required|mandatory)$", "", t).strip(" .,-–")
+    m = PHONE_LABEL.match(t)
+    if not m:
+        return False
+    tail = (m.group("tail") or "").strip()
+    # "WhatsApp number for updates" names the field; "Mobile for ..." without "number" is too vague
+    return bool(not tail or m.group("num") or m.group("cnum") or re.match(r"(with|without|including|incl)\b", tail))
+
+
+def phone_format(text: str) -> str | None:
+    """'national' / 'intl' when a label says how to write the number ("10 digits", "with country code")."""
+    t = (text or "").lower()
+    if re.search(r"without|excluding|w/o|10[- ]?digits?|no (country|isd) code", t):
+        return "national"
+    if re.search(r"country ?code|\bisd\b|international|e\.164|dial(l?ing)? ?code", t):
+        return "intl"
+    return None
+
+
 def parse_range(option: str) -> tuple[float, float] | None:
     """'0-1 years' -> (0,1); 'Less than 1' -> (0,1); '5+ yrs' -> (5,inf); '2' -> (2,2)."""
     o = norm(option)
@@ -191,8 +238,8 @@ class Answerer:
             return p.get("name")
         if re.search(r"e-?mail", q):
             return p.get("email")
-        if re.search(r"phone|mobile|contact number|whatsapp", q):
-            return p.get("phone")
+        if is_phone_question(question):
+            return self.phone(question)
         if "linkedin" in q:
             return p.get("linkedin") or None
         if "github" in q or "portfolio" in q:
@@ -253,6 +300,8 @@ class Answerer:
             return YES
         if re.search(r"agree.*(own words|not (use|copy|utilise).*ai|original|honest|no plagiarism)", q):
             return YES
+        if re.search(r"^(joining|to join|join)\b.{0,60}\b(is|are) (mandatory|compulsory|required|a must|necessary)\b", q):
+            return YES  # "Joining WhatsApp is Mandatory" wants an acknowledgement, not your number
 
         # --- current job ---------------------------------------------------
         if re.search(r"current (company|employer|organi[sz]ation)|currently working (with|at|for)|which company", q):
@@ -312,12 +361,42 @@ class Answerer:
         if not found and self.job_location:  # question has no country -> use the job's location
             found = [m.group(1).lower() for m in self.COUNTRY_RE.finditer(self.job_location)
                      if m.group(1).lower() != "us" or "united states" in self.job_location.lower()]
+            if not found and not re.search(r"remote|worldwide|anywhere|global|work from home|\bwfh\b",
+                                           self.job_location, re.I):
+                return None  # a city we can't place ("London"): leave it to you instead of claiming a permit
         in_allowed = (not found) or any(c in allowed for c in found)
         if sponsor:
             return NO if in_allowed else YES
         return YES if in_allowed else NO
 
     # ---------------------------------------------------------------- helpers
+    def dial_code(self) -> str:
+        """Calling code of your phone as digits ('91'): profile.phone_country_code, else from profile.country."""
+        own = re.sub(r"\D", "", str(self.p.get("phone_country_code") or ""))
+        return own or DIAL_CODES.get(str(self.p.get("country") or "India").strip().lower(), "")
+
+    def phone_numbers(self) -> tuple[str, str, str]:
+        """Your phone as (written in config.yaml, national digits, '+91 9876543210')."""
+        raw = str(self.p.get("phone") or "").strip()
+        digits, code = re.sub(r"\D", "", raw), self.dial_code()
+        international = raw.startswith(("+", "00"))
+        if raw.startswith("00"):
+            digits = digits[2:]
+        if international and not self.p.get("phone_country_code"):
+            # "+44 7911 ..." carries its own code - trust it over profile.country
+            code = next((c for c in sorted(set(DIAL_CODES.values()), key=len, reverse=True) if digits.startswith(c)), "")
+            if not code:  # a code we don't know: keep the number as written
+                return raw, digits, raw
+        if code and digits.startswith(code) and (international or len(digits) >= len(code) + 10):
+            digits = digits[len(code):]
+        return raw, digits, (f"+{code} {digits.lstrip('0')}" if code and digits else raw)
+
+    def phone(self, question: str = "") -> str | None:
+        """Your number, with the country code only when the question asks for it."""
+        raw, national, intl = self.phone_numbers()
+        fmt = phone_format(question)
+        return (national if fmt == "national" else intl if fmt == "intl" else raw) or None
+
     def _money(self, lpa, q: str):
         if lpa in (None, ""):
             return None

@@ -11,6 +11,7 @@ import re
 
 from playwright.sync_api import Error as PWError
 
+from .answers import DIAL_CODE_FIELD
 from .filters import contains_term
 
 log = logging.getLogger("company")
@@ -103,6 +104,8 @@ class GoogleFormFlow:
         title, company = job.get("title", ""), job.get("company", "")
         for step in range(8):
             items = page.evaluate(ITEMS_JS)
+            # a "Country code" question of its own: type the phone number without it
+            self.ap.filler.separate_country_code = any(DIAL_CODE_FIELD.search(it["title"]) for it in items)
             missing = []
             for it in items:
                 try:
@@ -182,7 +185,8 @@ class GoogleFormFlow:
         else:
             item.locator("[role=listbox]").click()
             self.page.wait_for_timeout(700)
-            opt = self.page.locator(f"[role=option][data-value=\"{choice}\"]").locator("visible=true")
+            value = choice.replace("\\", "\\\\").replace('"', '\\"')  # option text may contain quotes
+            opt = self.page.locator(f'[role=option][data-value="{value}"]').locator("visible=true")
             opt.last.click()
             self.page.wait_for_timeout(500)
         log.info("   %s -> %s", q[:50], choice)

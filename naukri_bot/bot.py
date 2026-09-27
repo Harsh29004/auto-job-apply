@@ -121,6 +121,7 @@ class NaukriBot:
         self._pw = self.ctx = self.page = None
         self.questionnaires = {}
         self.apply_responses = []
+        self._baseline = ""  # job page text before clicking Apply
 
     # ------------------------------------------------------------ lifecycle
     def __enter__(self):
@@ -354,6 +355,14 @@ class NaukriBot:
         except PWError:
             return False
 
+    def _new_hit(self, regex: re.Pattern, body: str) -> re.Match | None:
+        """Match of `regex` that appeared after clicking Apply. The job description itself often
+        contains phrases like "applied to real-world problems" or "reached the daily targets"."""
+        hits = list(regex.finditer(body))
+        if len(hits) <= len(regex.findall(self._baseline)):
+            return None
+        return hits[-1]  # the newest message is usually the last one
+
     def _apply_result(self, job_id: str) -> tuple[str, str] | None:
         """('applied'|'failed', detail) once Naukri shows the outcome, else None."""
         page = self.page
@@ -374,10 +383,12 @@ class NaukriBot:
         if self._visible("#already-applied") or self._visible("[class*='already-applied']"):
             return "applied", "already-applied button"
         body = self._body_text()
-        if FAIL_TEXT.search(body):
-            return "failed", FAIL_TEXT.search(body).group(0)
-        if SUCCESS_TEXT.search(body):
-            return "applied", SUCCESS_TEXT.search(body).group(0)
+        fail = self._new_hit(FAIL_TEXT, body)
+        if fail:
+            return "failed", fail.group(0)
+        success = self._new_hit(SUCCESS_TEXT, body)
+        if success:
+            return "applied", success.group(0)
         return None
 
     def apply(self, job: Job) -> tuple[str, str]:
@@ -403,6 +414,7 @@ class NaukriBot:
         if "login" in btn.inner_text().lower():
             return "error", "not logged in"
 
+        self._baseline = self._body_text()
         pages_before = len(self.ctx.pages)
         btn.click()
         page.wait_for_timeout(3000)
@@ -416,9 +428,9 @@ class NaukriBot:
         page = self.page
         last_question, repeats = None, 0
         for _ in range(30):
-            body = self._body_text()
-            if QUOTA_TEXT.search(body):
-                raise QuotaReached(re.search(QUOTA_TEXT, body).group(0))
+            quota = self._new_hit(QUOTA_TEXT, self._body_text())
+            if quota:
+                raise QuotaReached(quota.group(0))
             state = page.evaluate(READ_CHATBOT_JS) if self._visible(DRAWER) else None
             if state is None:
                 result = self._apply_result(job.job_id)
@@ -530,6 +542,13 @@ class NaukriBot:
     # ------------------------------------------------------------------ run
     def run(self, max_applies: int | None = None) -> dict:
         limit = max_applies or int(self.cfg.apply.get("max_applies_per_run", 25))
+        # several runs a day must not add up past Naukri's daily limit
+        left_today = int(self.cfg.apply.get("max_applies_per_day", 50)) - self.db.applied_today()
+        if not self.dry_run and left_today <= 0:
+            log.warning("Daily cap reached (%d applied today). Run again tomorrow.", self.db.applied_today())
+            return {"applied": 0, "planned": 0}
+        if not self.dry_run:
+            limit = min(limit, left_today)
         if not self.dry_run and not self.login():
             raise SystemExit("Login failed - check .env or log in manually in the opened browser.")
         jobs = self.collect_jobs()

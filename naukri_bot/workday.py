@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 from playwright.sync_api import Error as PWError
 from playwright.sync_api import Page
@@ -113,7 +114,7 @@ class WorkdayFlow:
         self.click(f"{A('click_filter')}[aria-label*='Create Account'], {submit}" if self.visible(A("click_filter")) else submit)
         page.wait_for_timeout(6000)
         text = self.body()
-        log.info("   Workday account created: %s / %s", acc["email"], acc["password"])
+        log.info("   Workday account created: %s (password saved in accounts.csv)", acc["email"])
         self.new_accounts.append(acc)
 
         if EXISTS_TEXT.search(text):
@@ -155,7 +156,12 @@ class WorkdayFlow:
         mail = self.inbox.wait_for(since, match=rf"workday|{re.escape(tenant)}", timeout=240)
         if not mail or not mail["links"]:
             return False
-        link = next((l for l in mail["links"] if "workday" in l.lower()), mail["links"][0])
+        # only a link back to this tenant / Workday - never some other link from an unrelated email
+        link = next((l for l in mail["links"] if urlparse(l).netloc.lower() == site), None) or next(
+            (l for l in mail["links"] if re.search(r"(^|\.)myworkday(jobs|site)?\.com$", urlparse(l).netloc, re.I)), None)
+        if not link:
+            log.info("   verification email had no Workday link")
+            return False
         self.page.goto(link, wait_until="domcontentloaded")
         self.page.wait_for_timeout(5000)
         log.info("   email verified")

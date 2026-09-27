@@ -95,8 +95,9 @@ def _body(msg) -> str:
 def extract_code(text: str) -> str | None:
     """Verification code (4-8 digits, or a 6-8 char alnum code next to the word 'code')."""
     text = re.sub(r"<[^>]+>", " ", text)
-    m = re.search(r"(?:code|otp|passcode|pin)[^0-9A-Za-z]{0,40}?\b([0-9]{4,8})\b", text, re.I) \
-        or re.search(r"\b([0-9]{6})\b", text) \
+    # always next to a code word: a bare 6-digit number is as likely an order no., PIN code or phone part
+    m = re.search(r"(?:code|otp|passcode|pin)(?:\W+is\b)?[^0-9A-Za-z]{0,40}?\b([0-9]{4,8})\b", text, re.I) \
+        or re.search(r"\b([0-9]{4,8})\b\W{0,5}(?:is your|is the)\b.{0,30}?(?:code|otp|passcode)", text, re.I) \
         or re.search(r"(?:code|otp)[^A-Za-z0-9]{0,20}\b([A-Z0-9]{6,8})\b", text)
     return m.group(1) if m else None
 
