@@ -29,20 +29,25 @@ def test_email_from_href():
     assert email_from_href("mailto:hr@acme.com?subject=Job") == "hr@acme.com"
     assert email_from_href("https://mail.google.com/mail/?view=cm&fs=1&to=hr%40cyberimpulses.com&su=x") == "hr@cyberimpulses.com"
     assert email_from_href("https://wa.me/+91123") is None
-    assert split_name("Harshkumar Rajubhai Panchal") == ("Harshkumar", "Panchal")
+    assert split_name("Asha Kumari Verma") == ("Asha", "Verma")
 
 
 def test_field_filler(cfg):
     f = FieldFiller(cfg, Answerer(cfg.profile, cfg.skills))
     v = lambda label, **kw: f.value_for({"label": label, "name": "", "placeholder": "", "tag": "input", **kw},
                                         "AI Engineer", "Acme")
-    assert v("First Name *") == "Harshkumar"
-    assert v("Last Name") == "Panchal"
-    assert v("Full Name") == "Harshkumar Rajubhai Panchal"
-    assert v("Company Name") == "LogicGo Infotech"
-    assert v("Email Address") == "harshpanchal2904@gmail.com"
-    assert v("Mobile Number") == "9727309697"
-    assert v("Current City") == "Surat"
+    P = cfg.profile
+    first, last = split_name(P["name"])
+    assert v("First Name *") == first
+    assert v("Last Name") == last
+    assert v("Full Name") == P["name"]
+    assert v("Company Name") == P["current_company"]
+    assert v("Email Address") == P["email"]
+    assert v("Mobile Number") == P["phone"]
+    assert v("Current City") == P["current_location"]
+    assert v("Location") == f'{P["current_location"]}, {P.get("country") or "India"}'
+    assert v("Country of residence") == "India"
+    assert v("First and Last Name") == P["name"]
     assert v("How did you hear about us?") == "Naukri.com"
     assert "AI Engineer" in v("Cover Letter") and "Acme" in v("Cover Letter")
     assert v("Notice period") == "Immediate"
@@ -95,8 +100,10 @@ def test_form_flow_submits(applier, server):
     status, detail = applier.apply_job(job(server + "/job.html"))
     assert status == "applied", detail
     sub = applier.page.evaluate("JSON.parse(localStorage.getItem('submitted'))")
-    assert sub["first_name"] == "Harshkumar" and sub["last_name"] == "Panchal"
-    assert sub["email"] == "harshpanchal2904@gmail.com" and sub["phone"] == "9727309697"
+    P = applier.cfg.profile
+    first, last = split_name(P["name"])
+    assert sub["first_name"] == first and sub["last_name"] == last
+    assert sub["email"] == P["email"] and sub["phone"] == P["phone"]
     assert sub["experience"] == "1-2 years" and sub["reloc"] == "y"
     assert sub["notice"] == "Immediate" and sub["source"] == "Naukri.com"
     assert sub["resume"].endswith("_Resume.pdf") and sub["consent"] == "on"  # tailored copy, neutral name
@@ -137,7 +144,8 @@ def test_google_form_flow(applier, server):
     status, detail = applier.apply_job(job(server + "/gform.html?docs.google.com/forms", "Python Developer"))
     assert status == "applied", detail
     ans = applier.page.evaluate("JSON.parse(localStorage.getItem('gform'))")
-    assert ans["name"] == "Harshkumar Rajubhai Panchal" and ans["email"] == "harshpanchal2904@gmail.com"
+    P = applier.cfg.profile
+    assert ans["name"] == P["name"] and ans["email"] == P["email"]
     assert ans["pyexp"] == "0-1 years"               # 1 year of Python -> first range containing 1
     assert ans["skills"] == ["Python", "React"]      # only skills on the resume are ticked
     assert ans["notice"] == "Immediate"

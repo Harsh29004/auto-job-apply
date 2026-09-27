@@ -19,6 +19,7 @@ from playwright.sync_api import sync_playwright
 from .company import SCAN_JS, CompanyApplier
 from .config import Config
 from .filters import evaluate, min_years_required  # noqa: F401  (min_years_required re-exported)
+from .foreign import HARD_RESTRICTION, RESTRICTED_TEXT, location_open, offers_sponsorship
 from .models import Job
 from .storage import Storage
 
@@ -443,6 +444,11 @@ class LinkedInBot:
                         ok, reason, score = evaluate(job, self.cfg.filters, self.cfg.skills)
                         if ok and re.search(r"\bunpaid\b|no stipend|without stipend", job.description, re.I):
                             ok, reason = False, "unpaid (description)"
+                        if ok and not location_open(job.location, self.cfg.foreign.get("countries") or ["india"]):
+                            # job abroad: skip when the ad requires local work rights you don't have
+                            hit = HARD_RESTRICTION.search(job.description) or RESTRICTED_TEXT.search(job.description)
+                            if hit and not offers_sponsorship(job.description):
+                                ok, reason = False, f"restricted: {hit.group(0)[:50]}"
                         if not ok:
                             self.db.record(job, "skipped", reason, score)
                             continue

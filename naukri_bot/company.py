@@ -37,7 +37,8 @@ SUCCESS_TEXT = re.compile(
     r"(received|submitted|sent)|successfully (submitted|applied|sent)|we (have )?received your (application|resume)|"
     r"we('ll| will) (get back|be in touch|contact you|review)|form (has been )?submitted", re.I)
 ERROR_TEXT = re.compile(r"(this field is|is) required|please (fill|enter|select|complete)|invalid (email|phone|value)", re.I)
-APPLY_TEXT = re.compile(r"^\s*(apply|apply now|apply here|apply online|apply for (this|the)? ?(job|position|role|opening)|"
+APPLY_TEXT = re.compile(r"^\s*(apply|apply now|apply here|apply online|apply again|apply on (the )?(company|employer)('s)? "
+                        r"(site|website|page)|apply externally|apply for (this|the)? ?(job|position|role|opening)|"
                         r"apply with resume|submit (your )?(resume|cv|application)|i'?m interested|send (your )?(resume|cv))\s*!?\s*$", re.I)
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -81,7 +82,9 @@ SCAN_JS = r"""
     const choice = type === 'radio' || type === 'checkbox';
     const labelVisible = choice && ((e.labels && e.labels[0] && vis(e.labels[0])) || vis(e.parentElement));
     if (type !== 'file' && ((!vis(e) && !labelVisible) || e.disabled)) continue;
-    const combo = e.readOnly && e.tagName === 'INPUT';
+    // dropdowns built from an <input>: read-only pickers and search-as-you-type (react-select, typeaheads)
+    const combo = e.tagName === 'INPUT' && (e.readOnly || e.getAttribute('role') === 'combobox' ||
+                                            e.getAttribute('aria-autocomplete') === 'list');
     if (e.readOnly && !combo) continue;
     if (type === 'file' && e.disabled) continue;
     e.setAttribute('data-nb-idx', String(idx));
@@ -290,8 +293,7 @@ class FieldFiller:
         for pattern, value in rules:
             if re.search(pattern, text):
                 if value == "__PREFER_NOT__":
-                    return next((o for o in field.get("options") or []
-                                 if re.search(r"prefer not|not (to )?disclose|do not prefer|rather not", o, re.I)), None)
+                    return Answerer._decline(field.get("options"))
                 if value == "__TITLE__":
                     return self.match_title(title, field) if field.get("tag") == "select" else title
                 if value == "__SOURCE__":
@@ -406,18 +408,33 @@ class CompanyApplier:
         """A captcha the user must solve (checkbox / challenge). The invisible reCAPTCHA badge
         (256x60 in the corner, size=invisible) is not one - forms with it submit normally."""
         for fr in self.page.frames:
-            if re.search(r"recaptcha/(api2|enterprise)/anchor|hcaptcha.com/captcha|challenges.cloudflare", fr.url):
+            # user-facing widgets only: reCAPTCHA checkbox, hCaptcha checkbox, Cloudflare Turnstile.
+            # (hCaptcha 'checkbox-invisible' / 'enclave' frames and off-screen challenge frames are not)
+            if re.search(r"recaptcha/(api2|enterprise)/anchor|hcaptcha\.com/captcha/.*frame=checkbox(?!-invisible)|"
+                         r"challenges\.cloudflare", fr.url):
                 if "size=invisible" in fr.url:
                     continue
                 try:
                     box = fr.frame_element().bounding_box()
                 except PWError:
                     continue
-                if not box or box["width"] < 60 or box["height"] < 40:
+                if not box or box["width"] < 60 or box["height"] < 40 or box["y"] < -100:
                     continue
                 if abs(box["width"] - 256) < 4 and abs(box["height"] - 60) < 4:
                     continue  # invisible reCAPTCHA badge
                 return True
+        return False
+
+    def captcha_challenge_shown(self) -> bool:
+        """An image/puzzle challenge popped up (usually right after clicking Submit)."""
+        for fr in self.page.frames:
+            if re.search(r"hcaptcha\.com/captcha/.*frame=challenge|recaptcha/(api2|enterprise)/bframe", fr.url):
+                try:
+                    box = fr.frame_element().bounding_box()
+                except PWError:
+                    continue
+                if box and box["y"] > -100 and box["width"] > 100 and box["height"] > 100:
+                    return True
         return False
 
     def bot_wall(self) -> bool:
@@ -491,7 +508,14 @@ class CompanyApplier:
             # fill the board's own widgets (CV upload for "be discovered", alerts ...)
             on_board = re.search(r"(^|\.)(jobicy|remotive|remoteok|weworkremotely|himalayas|arbeitnow)\.",
                                  urlparse(self.page.url).netloc.lower() + ".")
-            frame, fields = (None, []) if on_board and not re.search(r"/apply\b", self.page.url) else self.scan()
+            skip = on_board and hop == 0 and not re.search(r"/apply\b", self.page.url)
+            frame, fields = (None, []) if skip else self.scan()
+            for _ in range(4 if hop and not skip and not frame else 0):
+                # just clicked Apply: React / iframe forms (Ashby, Greenhouse) take a few seconds to render
+                self.page.wait_for_timeout(1500)
+                frame, fields = self.scan()
+                if frame:
+                    break
             if frame:
                 return self.fill_and_submit(frame, fields, job)
             route = self.click_apply(title)
@@ -576,6 +600,12 @@ class CompanyApplier:
             if SUCCESS_TEXT.search(text) or re.search(r"thank|success|confirm|submitted", self.page.url, re.I):
                 self.snapshot(f"applied_{job['job_id']}")
                 return "applied", "company site form"
+            if self.captcha_challenge_shown():
+                # the form was NOT sent - a human has to solve the puzzle
+                if self.assist_seconds:
+                    return self.wait_for_user(job)
+                shot = self.snapshot(f"captcha_{job['job_id']}")
+                return "manual", f"captcha challenge on submit - open the link, solve it and submit ({shot})"
             # multi-step form: a new set of fields appeared
             frame2, fields2 = self.scan()
             new_names = {f["name"] for f in fields2} - {f["name"] for f in fields}
@@ -616,6 +646,12 @@ class CompanyApplier:
                        if (e.type === 'radio' || e.type === 'checkbox')
                          return !!e.getRootNode().querySelector(`input[name="${CSS.escape(e.name)}"]:checked`);
                        if (e.getAttribute('aria-invalid') === 'true') return false;
+                       if (e.getAttribute('role') === 'combobox' || e.readOnly) {
+                         // react-select & co. show the chosen option next to the (empty) input
+                         const box = e.closest('[class*=container], [class*=select], [class*=control], [class*=field]');
+                         const shown = ((box && box.innerText) || e.value || '').replace(/\s+/g, ' ').trim();
+                         return shown !== '' && !/^(select|choose|search|type)\b/i.test(shown);
+                       }
                        const v = (e.value !== undefined ? e.value : e.innerText) || '';
                        if (e.type === 'file') return e.files && e.files.length > 0;
                        return v.trim() !== '' && !/^(select|choose)/i.test(v.trim())
@@ -683,35 +719,91 @@ class CompanyApplier:
                     missing.append(label)
         return missing
 
+    @staticmethod
+    def _read_options(frame: Frame, tries: int = 4) -> list[dict]:
+        opts = []
+        for _ in range(tries):  # options can load a moment after the dropdown opens / after typing
+            frame.page.wait_for_timeout(600)
+            opts = frame.evaluate(OPEN_OPTIONS_JS)
+            if opts:
+                break
+        return [o for o in opts if not re.match(r"^(select|choose|--|please|no options|loading|searching)", o["text"], re.I)]
+
+    def _choose(self, f: dict, opts: list[dict], title: str, company: str, wanted: str | None = None) -> dict | None:
+        texts = [o["text"] for o in opts]
+        if not texts:
+            return None
+        choice = self.filler.value_for(dict(f, tag="select", options=texts), title, company)
+        if choice not in texts and wanted:
+            choice = self.answerer.match_option(str(wanted), texts)
+        return opts[texts.index(choice)] if choice in texts else None
+
+    def _search_queries(self, wanted: str, f: dict) -> list[str]:
+        """What to type into a search-as-you-type dropdown, most specific first."""
+        label = (f.get("label") or "").lower()
+        queries = []
+        if re.search(r"school|college|university|institut", label) and self.cfg.profile.get("college_full_name"):
+            queries.append(self.cfg.profile["college_full_name"])
+        if re.search(r"time ?zone", label):
+            queries += ["India", "Kolkata", "IST", "UTC+05:30", "Asia"]
+        if re.search(r"nationality", label):
+            queries += [self.cfg.profile.get("nationality") or "Indian"]
+        elif re.search(r"country|citizenship", label):
+            queries += [self.cfg.profile.get("country") or "India"]
+        queries.append(wanted)
+        queries += [p.strip() for p in re.split(r",| and | & ", wanted) if len(p.strip()) > 2]
+        for pattern, alts in Answerer.SYNONYMS.items():
+            if re.search(pattern, wanted.lower()):
+                queries += [a.title() for a in alts[:5]]
+        seen, out = set(), []
+        for q in queries:
+            if q and q.lower() not in seen:
+                seen.add(q.lower())
+                out.append(q)
+        return out[:5]
+
     def _fill_combo(self, frame: Frame, f: dict, title: str, company: str, missing: list[str]):
-        """Custom (non-<select>) dropdown: open it, read the options, click the right one."""
+        """Custom dropdown (Angular, react-select, typeahead): open it and click the right option.
+        Search-as-you-type dropdowns get the wanted value typed first. If nothing fits, 'Other' is
+        picked when the list offers it - never a random option."""
         label = (f.get("label") or f.get("placeholder") or f.get("name") or "")[:80]
         el = frame.locator(f"[data-nb-idx='{f['idx']}']")
         el.evaluate("e => e.scrollIntoView({block: 'center'})")
-        if f.get("value") and not re.match(r"^(select|choose|--|please)", f["value"], re.I)                 and f["value"].strip("* ") not in label:
+        current = (f.get("value") or "").strip()
+        if current and not re.match(r"^(select|choose|--|please)", current, re.I) and current.strip("* ") not in label:
             return  # already has a value
         try:
             el.click(timeout=4000)
         except PWError:  # covered by a sticky banner etc.
             el.click(force=True, timeout=4000)
-        opts = []
-        for _ in range(4):  # options can load a moment after the dropdown opens
-            frame.page.wait_for_timeout(600)
-            opts = frame.evaluate(OPEN_OPTIONS_JS)
-            if opts:
-                break
-        texts = [o["text"] for o in opts if not re.match(r"^(select|choose|--|please)", o["text"], re.I)]
-        choice = self.filler.value_for(dict(f, tag="select", options=texts), title, company) if texts else None
-        if choice in texts:
-            opt = frame.locator(f"[data-nb-opt='{opts[[o['text'] for o in opts].index(choice)]['i']}']").first
+        opt = self._choose(f, self._read_options(frame), title, company)
+        typeable = f["tag"] == "input" and not el.evaluate("e => e.readOnly")
+        if opt is None and typeable:
+            wanted = self.filler.value_for(dict(f, tag="input", type="text", options=[]), title, company)
+            if wanted:
+                for query in self._search_queries(str(wanted), f):
+                    el.fill(query)
+                    opt = self._choose(f, self._read_options(frame, 3), title, company, wanted=str(wanted))
+                    if opt:
+                        break
+            if opt is None and f["required"]:
+                el.fill("Other")
+                opt = next((o for o in self._read_options(frame, 3) if o["text"].strip().lower() == "other"), None)
+        if opt:
+            loc = frame.locator(f"[data-nb-opt='{opt['i']}']").first
             try:
-                opt.scroll_into_view_if_needed(timeout=2000)
-                opt.click(timeout=4000)
+                loc.scroll_into_view_if_needed(timeout=2000)
+                loc.click(timeout=4000)
             except PWError:
-                opt.evaluate("e => e.click()")  # outside viewport / covered: click via DOM
-            log.info("   %s -> %s", label[:50], choice)
+                loc.evaluate("e => e.click()")  # outside viewport / covered: click via DOM
+            log.info("   %s -> %s", label[:50], opt["text"])
         else:
-            log.info("   %s: no matching option in %s", label[:50], texts[:12])
+            log.info("   %s: no fitting option", label[:50])
+            if typeable:
+                try:
+                    el.fill("")
+                except PWError:
+                    pass
             self._close_overlay(frame)
             if f["required"]:
                 missing.append(label)

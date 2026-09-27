@@ -199,7 +199,10 @@ Collects remote jobs from **Remotive, RemoteOK, WeWorkRemotely, Jobicy, Arbeitno
 | `python foreign_jobs.py --apply --retry` | Retry jobs previously marked manual/failed |
 
 - Himalayas pages are behind Cloudflare, so the bot tries to find the same job on the company's **Ashby, Greenhouse or Lever** board. If found, it uses the direct link; otherwise the job goes on the manual list.
-- Jobs requiring US/UK citizenship, security clearance, or saying "unable to sponsor" are skipped.
+- A job is kept only if you can do it from where you live. The job has to be open worldwide, to APAC, to Asia or to one of your `work_authorized_countries`.
+- It is skipped if it requires US or UK work authorization, citizenship or a security clearance.
+- On-site jobs abroad are kept only when they offer visa sponsorship or relocation (`FOREIGN_ALLOW_RELOCATION=true`). "We do *not* sponsor" is recognised as a no.
+- Non-English ads, senior roles and roles asking for more than `FOREIGN_MAX_YEARS` years are skipped.
 - All collected jobs are saved in `data/foreign_jobs.csv`.
 
 ## Resume variants (`build_resumes.py`)
@@ -219,7 +222,13 @@ Generates **6 role-tailored resumes** from a single YAML source file, each with 
 python build_resumes.py          # generates DOCX + PDF in resumes/
 ```
 
-The bot automatically picks the best resume for each job based on the job title and description.
+The bot automatically picks the best resume for each job based on the job title and description. It uploads the resume as `<Your_Name>_Resume.pdf`, never as `ai_ml_engineer.pdf`.
+
+Setup:
+- Copy `resume_content.example.yaml` to `resumes/content.yaml` and put in your own details.
+- Each variant has its own `summary`, skill order, project list and `keywords`, which are used to pick the variant for a job.
+- Only list skills you can talk about in an interview.
+- `resumes/` is gitignored.
 
 ## LinkedIn external jobs
 
@@ -228,6 +237,22 @@ When `LINKEDIN_EASY_APPLY_ONLY=false` in `.env`, the LinkedIn bot also captures 
 ```bash
 python linkedin_apply.py --max 5 --then-company 5   # Easy Apply 5, then 5 company-site jobs
 ```
+
+Google Forms are filled by a dedicated handler. It handles:
+- short and long answers
+- multiple choice, checkboxes and dropdowns
+- multi-page forms
+
+For skill checklists it ticks only the skills that are in your `skills`. Forms that need a Google sign-in or a file upload are put on the manual list.
+
+## How answers are kept honest
+
+- **Preview runs never upload your resume.** Many sites upload a file the moment it is chosen, so `--no-submit` and `--dry-run` only log "would upload". Nothing is sent.
+- **Demographic (EEO) questions are never guessed.** Race, Hispanic/Latino, veteran, disability and orientation get the "decline to answer" option, or are left empty.
+- **Unknown Yes/No questions are not answered "Yes".** Only willingness, consent and flexibility questions get an automatic yes. Anything else is left empty, and if it is required the job goes to the manual list.
+- **Visa questions depend on the job's country.** "Authorized to work in the US?" is answered No and "Need sponsorship?" is answered Yes for a US job, based on `profile.work_authorized_countries`.
+- **"Describe your experience with X, Y and Z" only claims the skills on your list.** It says plainly which tools you haven't used yet.
+- **Dropdowns only match whole words.** "India" never picks "British Indian Ocean Territory", and "Artificial Intelligence and Data Science" never picks "Science".
 
 ## Project structure
 

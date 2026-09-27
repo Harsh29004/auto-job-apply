@@ -7,8 +7,8 @@ from naukri_bot.answers import Answerer, parse_range, pick_numeric_option
     ("How many years of experience do you have in Python?", "1"),
     ("How many years of experience do you have in Machine Learning?", "1"),
     ("How many years of experience do you have in TensorFlow?", "1"),
-    ("How many years of experience do you have in Kubernetes?", "0"),
-    ("How many years of experience do you have in Java?", "0"),
+    ("How many years of experience do you have in Kubernetes?", "1"),
+    ("How many years of experience do you have in Java?", "1"),
     ("What is your total years of experience?", "1"),
     ("Total experience in years", "1"),
     ("How many years of relevant experience do you have?", "1"),
@@ -19,7 +19,7 @@ from naukri_bot.answers import Answerer, parse_range, pick_numeric_option
     ("Current CTC in INR", "240000"),
     ("What is your notice period?", "Immediate"),
     ("What is your notice period in days?", "0"),
-    ("What is your current location?", "Surat"),
+    ("What is your current location?", "{current_location}"),
     ("Are you willing to relocate to Bangalore?", "Yes"),
     ("Are you comfortable working from office 5 days a week?", "Yes"),
     ("Can you join immediately?", "Yes"),
@@ -33,13 +33,14 @@ from naukri_bot.answers import Answerer, parse_range, pick_numeric_option
     ("Year of passing graduation?", "2026"),
     ("What is your 12th percentage?", "60"),
     ("10th percentage", "74.17"),
-    ("What is your current company name?", "LogicGo Infotech"),
-    ("Please enter your mobile number", "9727309697"),
-    ("Your email id", "harshpanchal2904@gmail.com"),
+    ("What is your current company name?", "{current_company}"),
+    ("Please enter your mobile number", "{phone}"),
+    ("Your email id", "{email}"),
     ("Total experience in months", "8"),
 ])
 def test_text_answers(answerer, question, expected):
-    assert answerer.answer(question) == expected
+    # "{email}" etc. come from your config.yaml profile, so no personal data lives in the tests
+    assert answerer.answer(question) == expected.format(**answerer.p)
 
 
 def test_unknown_question_returns_none(answerer, cfg):
@@ -76,7 +77,7 @@ def test_ctc_empty_is_unanswered(cfg):
     ("What is your notice period?", ["15 Days or less", "1 Month", "2 Months", "3 Months"], "15 Days or less"),
     ("How many years of experience do you have in Python?", ["0-1 years", "1-3 years", "3-5 years", "5+ years"], "0-1 years"),
     ("Total experience?", ["Fresher", "Less than 1 year", "1-2 years", "2+ years"], "1-2 years"),
-    ("How many years of experience in Java?", ["Fresher", "1-2 years", "3+ years"], "Fresher"),
+    ("How many years of experience in Java?", ["Fresher", "1-2 years", "3+ years"], "1-2 years"),
     ("Highest qualification", ["B.E/B.Tech", "M.Tech", "MCA", "BCA"], "B.E/B.Tech"),
     ("Are you comfortable with a 2 year bond?", ["I agree", "Not comfortable"], "I agree"),
     ("Describe yourself", ["Skip this question"], "Skip this question"),

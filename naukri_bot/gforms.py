@@ -96,7 +96,9 @@ class GoogleFormFlow:
     def apply(self, job: dict) -> tuple[str, str]:
         page = self.page
         page.wait_for_timeout(1500)
-        if "accounts.google.com" in page.url or SIGNIN_TEXT.search(self.text()):
+        # every form shows an optional "Sign in to Google to save your progress" banner - only a form
+        # whose questions are hidden behind the sign-in (or redirects to accounts.google.com) needs it
+        if "accounts.google.com" in page.url or (SIGNIN_TEXT.search(self.text()) and not page.evaluate(ITEMS_JS)):
             return "manual", "Google Form needs a Google sign-in - fill it yourself"
         title, company = job.get("title", ""), job.get("company", "")
         for step in range(8):

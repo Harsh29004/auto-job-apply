@@ -137,6 +137,7 @@ profile:
   email: your_email@example.com
   phone: "9999999999"
   current_location: Your City
+  state: Your State
   preferred_location: Anywhere in India / Remote
   willing_to_relocate: "Yes"
   # Countries where you can work without a visa. Used for "authorized to work in X?" and

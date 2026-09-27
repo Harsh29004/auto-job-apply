@@ -100,6 +100,10 @@ class Answerer:
             if key and key in q:
                 return value
 
+        # --- follow-ups that only apply to another answer ("If you selected Other, please specify")
+        if re.match(r"^(if|in case)\b.{0,40}\b(selected|chose|choose|answered|picked|yes|no|other|so|none|not)\b", q):
+            return None
+
         # --- voluntary self-identification (EEO): never guess ---------------
         if re.search(r"hispanic|latin[oa]\b|\brace\b|ethnicit|veteran|disabilit|sexual orientation|transgender|"
                      r"pronoun|lgbt|gender identity", q):
@@ -125,11 +129,19 @@ class Answerer:
         if re.search(r"(what|which) time ?zone|your (current )?time ?zone|time ?zone (are you|do you)", q):
             tz = p.get("timezone") or "IST (UTC+05:30)"
             if options:
-                return next((o for o in options if re.search(r"\bist\b|india|kolkata|calcutta|5:30|utc ?\+ ?5|gmt ?\+ ?5",
-                                                             o, re.I)), None)
+                # exact zone first, then the region India belongs to ("Asia Pacific Time Zones")
+                for want in (r"\bist\b|\bindia\b|india standard|kolkata|calcutta|\+ ?0?5:30|utc ?\+ ?0?5\b|gmt ?\+ ?0?5\b",
+                             r"asia[ -]?pacific|\bapac\b|\basia\b"):
+                    hit = next((o for o in options if re.search(want, o, re.I)), None)
+                    if hit:
+                        return hit
+                return None
             return tz
-        if re.search(r"country of (residence|origin|citizenship)|nationality|citizenship|(which|what) country "
-                     r"(do you|are you)|country (do you|are you) (live|reside|based|located)", q):
+        if re.search(r"nationality", q) and not re.search(r"right to work|authori[sz]|visa|sponsor", q):
+            return p.get("nationality") or "Indian"
+        if re.search(r"country of (residence|origin|citizenship)|citizenship|(which|what) country "
+                     r"(do you|are you)|country (do you|are you) (live|reside|based|located)", q) and not re.search(
+                r"right to work|authori[sz]|eligib|permit|visa|sponsor|allowed to work", q):
             return p.get("country") or "India"
 
         # --- salary --------------------------------------------------------
@@ -147,7 +159,9 @@ class Answerer:
         # --- notice period / joining ---------------------------------------
         joining = re.search(r"\bjoin", q) and re.search(r"when|how soon|available|availability|start|date|immediate|"
                                                        r"days|weeks|earliest|notice", q)
-        if "notice" in q or joining or "serving" in q:
+        notice = re.search(r"notice period|\bnotice\b", q) and not re.search(
+            r"(privacy|legal|this|the following|above|data protection|applicant|recruitment|gdpr) notice", q)
+        if notice or joining or "serving notice" in q:
             if re.search(r"\b(can|will|would|are) you\b.*\b(join|joining)\b.*\b(immediate|within|asap|\d+ days)", q):
                 return YES
             if "serving" in q:
@@ -212,7 +226,7 @@ class Answerer:
             return p.get("graduation_year")
         if re.search(r"highest (qualification|education|degree)|qualification|which degree|your degree|educational", q):
             return p.get("highest_qualification")
-        if re.search(r"specialization|stream|branch|major", q):
+        if re.search(r"specialization|stream|branch|major|discipline|field of study|area of study", q):
             return p.get("degree_branch")
         if re.search(r"college|university|institute", q):
             return p.get("college")
@@ -287,6 +301,8 @@ class Answerer:
         sponsor = re.search(r"sponsor|visa|work permit|h-?1b", q)
         authorized = re.search(r"authori[sz]ed to work|legally (eligible|authori[sz]ed|able|allowed|permitted)|"
                                r"eligible to work|right to work|work authori[sz]ation|permitted to work", q)
+        if authorized and re.search(r"without (the need (for|of) |requiring |needing )?(any )?(visa |work )?sponsor", q):
+            sponsor = None  # "right to work ... WITHOUT sponsorship?" is an authorization question
         if not (sponsor or authorized):
             return None
         allowed = [c.lower() for c in (self.p.get("work_authorized_countries") or ["India"])]
@@ -350,7 +366,7 @@ class Answerer:
                 return self._fmt(self._skill_years(skill))
             if words and words <= GENERIC_EXP | {"of", "in", "a", "an", "as", "and", "you", "have", "do", "experience", "your"}:
                 return self._fmt(total_years)
-            return self._fmt(float(self.p.get("unknown_skill_experience", 0)))
+            return self._fmt(float(self.p.get("unknown_skill_experience", 1)))
 
         skill = self._known_skill_in(q)
         if skill and re.search(r"how many|how much|years|yrs", q):
@@ -413,12 +429,19 @@ class Answerer:
         subject = (m.group(1).strip() if m else "").rstrip(" *?.")
         if not subject:
             return None
-        skill = self._known_skill_in(subject)
-        if skill:
-            years = self._fmt(self._skill_years(skill))
+        # "JavaScript, TypeScript and React" -> only claim the ones on your skill list
+        items = [x.strip(" .") for x in re.split(r",|/|\band\b|\bor\b|&", subject) if x.strip(" .")]
+        known = [x for x in items if self._known_skill_in(x)]
+        unknown = [x for x in items if x not in known]
+        context = self.p.get("experience_context") or "academic projects and work experience"
+        join = lambda xs: xs[0] if len(xs) == 1 else ", ".join(xs[:-1]) + " and " + xs[-1]  # noqa: E731
+        if known:
+            years = self._fmt(max(self._skill_years(self._known_skill_in(x)) for x in known))
             unit = "year" if years == "1" else "years"
-            context = self.p.get("experience_context") or "academic projects and work experience"
-            return f"About {years} {unit} of hands-on experience with {subject}, from {context}."
+            text = f"About {years} {unit} of hands-on experience with {join(known)}, from {context}."
+            if unknown:
+                text += f" I have not used {join(unknown)} professionally yet, but I learn new tools quickly."
+            return text
         return (f"I have not worked with {subject} professionally yet, but I pick up new tools quickly "
                 f"and would be glad to build that experience.")
 
@@ -449,7 +472,9 @@ class Answerer:
                     return o
             if r == "yes":
                 for o, lo in low.items():
-                    if re.search(r"\b(agree|okay|ok|sure|willing|comfortable|ready|available|interested|i am|i'm|i do|i can|absolutely)\b", lo) and "not" not in lo:
+                    if re.search(r"\b(agree|okay|ok|sure|willing|comfortable|ready|available|interested|i am|i'm|i do|"
+                                 r"i can|absolutely|confirm|confirmed|acknowledge|accept|understand|consent|"
+                                 r"have read)\b", lo) and not re.search(r"\b(not|don't|do not|no)\b", lo):
                         return o
             return None
 
@@ -467,16 +492,36 @@ class Answerer:
                     return o
             return pick_numeric_option(val, options)
 
+        if not r:
+            return None
+
+        def whole(needle: str, hay: str) -> bool:  # needle appears as whole word(s) in hay
+            return re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", hay) is not None
+
+        # option starts with the answer: "India" -> "India (+91)" (but never "Indian Ocean ...")
+        starts = [o for o, lo in low.items() if lo.startswith(r) and not lo[len(r):len(r) + 1].isalpha()]
+        if starts:
+            return min(starts, key=len)
+        # answer is whole words inside an option: "Bachelor" -> "Bachelor's Degree"
+        inside = [o for o, lo in low.items() if len(r) >= 3 and whole(r, lo)]
+        if inside:
+            return min(inside, key=len)
+        # option is whole words inside the answer: "Artificial Intelligence" in "Artificial Intelligence and
+        # Data Science" (short options like "Art" never match part of a word)
+        sig = lambda s: {w for w in re.findall(r"[a-z0-9]+", s) if len(w) > 2 and w not in ("and", "the", "for")}  # noqa: E731
+        answer_words = sig(r)
+        contained = [o for o, lo in low.items() if len(lo) >= 4 and whole(lo, r)
+                     and len(sig(lo)) / max(len(answer_words), 1) >= 0.4]  # "Science" alone is too generic
+        if contained:
+            return max(contained, key=len)
+        # most of the option's words appear in the answer: "Surat, India" -> "Surat, Gujarat, India"
+        best, best_score = None, 0.0
         for o, lo in low.items():
-            if r and (r in lo or lo in r) and len(lo) > 1:
-                return o
-        # word overlap (e.g. "B.Tech" vs "B.Tech/B.E.")
-        rw = set(re.findall(r"[a-z0-9]+", r))
-        best, best_n = None, 0
-        for o, lo in low.items():
-            n = len(rw & set(re.findall(r"[a-z0-9]+", lo)))
-            if n > best_n:
-                best, best_n = o, n
+            ow = sig(lo)
+            n = len(answer_words & ow)
+            # most of the option's words AND a fair share of the answer's words
+            if ow and n and n / len(ow) >= 0.5 and n / max(len(answer_words), 1) >= 0.4 and n / len(ow) > best_score:
+                best, best_score = o, n / len(ow)
         return best
 
     @staticmethod
