@@ -3,6 +3,7 @@ config.yaml
 browser_profile/
 browser_profile_company/
 browser_profile_linkedin/
+browser_profile_indeed/
 data/
 __pycache__/
 .pytest_cache/

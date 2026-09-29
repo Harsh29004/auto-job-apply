@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Data Engineer - Careers</title>
+<!-- A form that sends and then silently clears itself (no thank-you text). ?ask=email adds the company's
+     instruction "send your application to jobs@acme.example" and turns the form into a contact form (no CV box). -->
+<h1>Data Engineer</h1>
+<p id="how"></p>
+<form id="f">
+  <label for="n">Name *</label><input id="n" name="name" required>
+  <label for="e">E-mail *</label><input id="e" name="email" type="email" required>
+  <label for="m">Message *</label><textarea id="m" name="message" required></textarea>
+  <span id="cvbox"><label for="cv">Resume *</label><input id="cv" type="file" required></span>
+  <label><input type="checkbox" name="consent" required> By submitting this form, you agree to our privacy policy</label>
+  <button type="submit">Submit</button>
+</form>
+<script>
+if (location.search.includes("ask=email")) {
+  document.getElementById("how").textContent =
+    "Please send your application to jobs@acme.example including your CV and transcript.";
+  document.getElementById("cvbox").remove();
+}
+document.getElementById("f").onsubmit = ev => {
+  ev.preventDefault();
+  localStorage.setItem("sent", String(Number(localStorage.getItem("sent") || 0) + 1));
+  ev.target.reset();
+};
+</script>

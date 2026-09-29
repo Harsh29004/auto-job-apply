@@ -36,7 +36,8 @@ log = logging.getLogger("foreign")
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/131.0.0.0 Safari/537.36", "Accept": "application/json, text/xml, */*"}
-ALL_SOURCES = ["himalayas", "remotive", "remoteok", "jobicy", "weworkremotely", "arbeitnow"]
+ALL_SOURCES = ["himalayas", "remotive", "remoteok", "jobicy", "weworkremotely", "arbeitnow", "workingnomads",
+               "themuse", "4dayweek", "landingjobs", "arc"]
 
 OPEN_LOCATION = re.compile(
     r"worldwide|anywhere|global|international|all countries|any country|no (location )?restriction|"
@@ -115,7 +116,8 @@ class Fetcher:
         if as_json:
             data = json.loads(raw)
         else:
-            ET.fromstring(raw)
+            if url.endswith(".rss"):
+                ET.fromstring(raw)  # an RSS feed must be XML, not an error page
             data = raw
         path.write_bytes(raw)
         return data
@@ -270,6 +272,84 @@ def fetch_arbeitnow(f: Fetcher, pages: int = 2) -> list[ForeignJob]:
     return out
 
 
+def fetch_workingnomads(f: Fetcher) -> list[ForeignJob]:
+    js = f.get("https://www.workingnomads.com/api/exposed_jobs/")
+    return [ForeignJob("workingnomads", j["url"].rstrip("/").split("/")[-1], j.get("title", ""), j.get("company_name", ""),
+                       j["url"], j["url"], j.get("location") or "", text_of(j.get("description", "")), "",
+                       [t.strip() for t in (j.get("tags") or "").split(",") if t.strip()])
+            for j in js if isinstance(js, list) and j.get("url") and j.get("category_name") in ("Development", "Data")]
+
+
+def fetch_themuse(f: Fetcher, pages: int = 1) -> list[ForeignJob]:
+    """The Muse: entry-level / internship jobs; each links on to the company's own application."""
+    out = []
+    for cat in ("Software Engineering", "Data and Analytics", "Data Science"):
+        for level in ("Entry Level", "Internship"):
+            for page in range(pages):
+                js = f.get_or_none(f"https://www.themuse.com/api/public/jobs?page={page}&category="
+                                   f"{urllib.parse.quote(cat)}&level={urllib.parse.quote(level)}", max_age=12 * 3600)
+                for j in (js or {}).get("results") or []:
+                    link = (j.get("refs") or {}).get("landing_page") or ""
+                    if link:
+                        out.append(ForeignJob(
+                            "themuse", str(j["id"]), j.get("name", ""), (j.get("company") or {}).get("name", ""), link,
+                            link, ", ".join(x.get("name", "") for x in j.get("locations") or []) or "Flexible / Remote",
+                            text_of(j.get("contents", "")), ", ".join(x.get("name", "") for x in j.get("levels") or []),
+                            [x.get("name", "") for x in j.get("categories") or []]))
+    return out
+
+
+def fetch_4dayweek(f: Fetcher) -> list[ForeignJob]:
+    """4 Day Week: remote jobs with a shorter working week."""
+    js = f.get("https://4dayweek.io/api/v2/jobs")
+    out = []
+    for j in js.get("data") or []:
+        if j.get("work_arrangement") != "remote" or not j.get("url"):
+            continue
+        places = [x.get("country") or x.get("continent") or "" for x in j.get("locations") or []]
+        out.append(ForeignJob("4dayweek", str(j.get("id") or j["slug"]), j.get("title", ""),
+                              (j.get("company") or {}).get("name", "") if isinstance(j.get("company"), dict)
+                              else str(j.get("company") or ""), j["url"], j["url"],
+                              ", ".join(p for p in places if p) or "Remote", text_of(j.get("description", "")),
+                              j.get("level", ""), [s.get("name", "") for s in j.get("skills") or []]))
+    return out
+
+
+def fetch_landingjobs(f: Fetcher) -> list[ForeignJob]:
+    """Landing.jobs: tech jobs in Europe. Kept only when relocation is paid (or the job is open to you)."""
+    js = f.get("https://landing.jobs/api/v1/jobs?limit=100")
+    out = []
+    for j in js if isinstance(js, list) else []:
+        places = ", ".join(x.get("country_code", "") for x in j.get("locations") or [])
+        desc = text_of(" ".join(str(j.get(k) or "") for k in ("role_description", "main_requirements", "nice_to_have")))
+        if j.get("relocation_paid"):
+            desc += " Relocation package provided."
+        company = (re.search(r"/at/([^/]+)/", j.get("url", "")) or [None, ""])[1].replace("-", " ").title()
+        out.append(ForeignJob("landingjobs", str(j["id"]), j.get("title", ""), company, j.get("url", ""),
+                              j.get("url", ""), f"Europe (remote), {places}" if j.get("remote") else f"Europe, {places}",
+                              desc, "", list(j.get("tags") or [])))
+    return out
+
+
+def fetch_arc(f: Fetcher) -> list[ForeignJob]:
+    """Arc.dev remote jobs (apply with an Arc profile - these go to your manual list)."""
+    raw = f.get("https://arc.dev/remote-jobs", as_json=False, max_age=12 * 3600)
+    m = re.search(rb'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', raw, re.S)
+    props = json.loads(m.group(1))["props"]["pageProps"] if m else {}
+    out = []
+    for j in props.get("arcJobs") or []:
+        link = f"https://arc.dev/remote-jobs/details/{j['urlString']}-{j['randomKey']}"
+        out.append(ForeignJob("arc", j["randomKey"], j.get("title", ""), (j.get("company") or {}).get("name") or "Arc client",
+                              link, link, ", ".join(j.get("requiredCountries") or []) or "Worldwide", "",
+                              j.get("experienceLevel") or "", [c.get("name", "") for c in j.get("categories") or []]))
+    for j in props.get("externalJobs") or []:
+        link = f"https://arc.dev/remote-jobs/j/{j['urlString']}"
+        out.append(ForeignJob("arc", j["randomKey"], j.get("title", ""), (j.get("company") or {}).get("name", ""), link,
+                              link, ", ".join(j.get("requiredCountries") or []) or "Worldwide", "",
+                              ", ".join(j.get("experienceLevels") or []), [c.get("name", "") for c in j.get("categories") or []]))
+    return out
+
+
 def fetch_ats_boards(f: Fetcher, boards: list[str]) -> list[ForeignJob]:
     """Company career boards: 'greenhouse:<token>', 'lever:<company>', 'ashby:<org>'."""
     out = []
@@ -325,6 +405,25 @@ def offers_sponsorship(text: str) -> bool:
         if not NEGATION.search(before) and not NEGATION_AFTER.search(after):
             return True
     return False
+
+
+TITLE_ONLY = re.compile(r"\b(us|usa|u\.s\.|canada|uk|eu|europe|latam|americas|emea)\b[^()]{0,40}\bonly\b|"
+                        r"\bonly\b[^()]{0,20}\b(us|usa|canada|uk|eu|europe|latam)\b|\bcandidates only\b", re.I)
+
+
+def abroad_restriction(title: str, description: str, allowed_countries: list[str]) -> str | None:
+    """Why a job abroad is closed to you ('US/Canada candidates only' in the title, 'must be based in the US',
+    'US citizens only' ...), or None. Relocation / visa sponsorship offers lift the softer description rules."""
+    only = TITLE_ONLY.search(title or "")
+    if only:
+        return f"title: {only.group(0)[:50]}"
+    place = TITLE_PLACE.search(title or "")
+    if place and place.group(1).lower() not in [c.lower() for c in allowed_countries]:
+        return f"title limited to {place.group(1)}"
+    hit = HARD_RESTRICTION.search(description or "") or RESTRICTED_TEXT.search(description or "")
+    if hit and not offers_sponsorship(description or ""):
+        return f"restricted: {hit.group(0)[:50]}"
+    return None
 
 
 def location_open(location: str, allowed_countries: list[str]) -> bool:
@@ -383,6 +482,16 @@ def collect(cfg: Config, db: Storage, sources: list[str] | None = None, opts: di
                 jobs = fetch_weworkremotely(fetcher)
             elif src == "arbeitnow":
                 jobs = fetch_arbeitnow(fetcher)
+            elif src == "workingnomads":
+                jobs = fetch_workingnomads(fetcher)
+            elif src == "themuse":
+                jobs = fetch_themuse(fetcher, opts.get("pages", 1))
+            elif src == "4dayweek":
+                jobs = fetch_4dayweek(fetcher)
+            elif src == "landingjobs":
+                jobs = fetch_landingjobs(fetcher)
+            elif src == "arc":
+                jobs = fetch_arc(fetcher)
             else:
                 log.warning("unknown source %s", src)
                 continue

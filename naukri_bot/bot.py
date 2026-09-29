@@ -394,10 +394,16 @@ class NaukriBot:
     def apply(self, job: Job) -> tuple[str, str]:
         """Apply to one job. Returns (status, detail)."""
         page = self.page
-        try:
-            page.goto(job.url, wait_until="domcontentloaded")
-        except PWError as e:
-            return "error", f"open failed: {e}"
+        for attempt in range(2):
+            try:
+                page.goto(job.url, wait_until="domcontentloaded")
+                break
+            except PWError as e:
+                # the previous job's page may still be navigating (Naukri's saveApply redirect after an
+                # unfinished chatbot) and aborts this navigation - wait for it and try once more
+                if attempt or not re.search(r"ERR_ABORTED|interrupted by another navigation", str(e)):
+                    return "error", f"open failed: {str(e).splitlines()[0]}"
+                page.wait_for_timeout(3000)
         page.wait_for_timeout(3000)
 
         if self._visible("#already-applied") or self._visible("[class*='already-applied']"):
@@ -407,8 +413,13 @@ class NaukriBot:
         btns = page.locator("#apply-button")
         btn = next((btns.nth(i) for i in range(btns.count()) if btns.nth(i).is_visible()), None)
         if btn is None:
-            if re.search(r"no longer (available|accepting)|job (has )?expired|expired", self._body_text(), re.I):
+            body = self._body_text()
+            if re.search(r"no longer (available|accepting)|job (has )?expired|expired", body, re.I):
                 return "expired", ""
+            if re.search(r"\bwalk[- ]?in\b", job.title, re.I) or self._visible("button:has-text('I am interested')"):
+                venue = re.search(r"Time and Venue\s*(.{0,160})", body, re.S)
+                return "walk_in", "walk-in interview, attend in person: " + (
+                    re.sub(r"\s+", " ", venue.group(1)).strip() if venue else "see the job page")
             self.snapshot(f"no_apply_btn_{job.job_id}")
             return "error", "apply button not found"
         if "login" in btn.inner_text().lower():
@@ -462,6 +473,11 @@ class NaukriBot:
             else:
                 last_question, repeats = question, 0
 
+            if state["hasText"] and state["options"] and all(re.search(r"\bskip\b", o, re.I) for o in state["options"]):
+                # a text question with a "Skip this question" chip: type the answer when there is one
+                typed = self.answerer.answer(question, [])
+                if typed is not None:
+                    state = dict(state, options=[], kinds=[])
             answer = self.answerer.answer(question, state["options"])
             log.info("   Q: %s %s", question, state["options"] or "")
             log.info("   A: %s", answer)
@@ -515,7 +531,13 @@ class NaukriBot:
                     "div:text-is('Save')", "button:has-text('Submit')", "button:has-text('Send')"]:
             loc = drawer.locator(sel)
             if loc.count() and loc.first.is_visible():
-                loc.first.click()
+                try:
+                    loc.first.click(timeout=3000)
+                except PWError:
+                    # disabled: a chip ("Skip this question") already sent the answer, and the empty
+                    # text box keeps Send greyed out - waiting 20 s for it used to fail the whole job
+                    if not chip:
+                        self.page.keyboard.press("Enter")
                 return
         if not chip:  # chips usually submit on click; text boxes accept Enter
             self.page.keyboard.press("Enter")

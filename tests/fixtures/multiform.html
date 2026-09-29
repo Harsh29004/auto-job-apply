@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ML Engineer - Careers</title>
+<!-- Like Teamtailor: a job search box, the application form, and a "connect with us" widget whose invisible
+     required email box (opacity 0, tabindex -1) must never be touched or block the application. -->
+<form id="search"><input name="q" placeholder="Search jobs"><button>Search</button></form>
+<h1>ML Engineer</h1>
+<form id="app">
+  <label for="n">Full name *</label><input id="n" name="name" required>
+  <label for="e">Email *</label><input id="e" type="email" name="email" required>
+  <label for="cv">Resume *</label><input id="cv" type="file" required>
+  <button type="submit">Submit application</button>
+</form>
+<form id="connect">
+  <h3>Already working here? Connect</h3>
+  <label for="ce">Work email</label><input id="ce" type="email" name="connect_email">
+  <input tabindex="-1" required type="email" aria-label="Email address without domain" name="full_email"
+         style="opacity:0; position:absolute">
+  <button type="submit">Connect</button>
+</form>
+<script>
+document.getElementById("app").onsubmit = ev => {
+  ev.preventDefault();
+  const v = id => document.getElementById(id);
+  localStorage.setItem("multi", JSON.stringify({name: v("n").value, email: v("e").value, cv: v("cv").files.length}));
+  document.body.innerHTML = "<h1>Thank you for applying!</h1>";
+};
+document.getElementById("connect").onsubmit = ev => { ev.preventDefault(); localStorage.setItem("connected", "1"); };
+</script>

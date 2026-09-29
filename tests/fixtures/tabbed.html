@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Junior Full-Stack Developer - Careers</title>
+<!-- Like Recruitee: the application form sits on a hidden tab until you press "Apply". It asks for a resume
+     and (optionally) a screenshot - the screenshot box must never get the resume. -->
+<h1>Junior Full-Stack Developer</h1>
+<nav><button id="tab" type="button">Apply</button></nav>
+<section id="details"><p>We are hiring a Junior Full-Stack Developer to build React and Python apps.</p></section>
+<section id="app" style="display:none">
+  <form id="f">
+    <label for="n">Full name *</label><input id="n" name="fullname" required>
+    <label for="e">Email address *</label><input id="e" name="email" type="email" required>
+    <label for="cv">CV or resume *</label><input id="cv" type="file" name="cv" required>
+    <label for="shot">Attach a screenshot of your internet speed</label><input id="shot" type="file" name="speed">
+    <button type="submit">Send</button>
+  </form>
+</section>
+<script>
+document.getElementById('tab').onclick = () => {
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('details').style.display = 'none';
+};
+document.getElementById('f').onsubmit = ev => {
+  ev.preventDefault();
+  const v = id => document.getElementById(id);
+  localStorage.setItem('tabbed', JSON.stringify({name: v('n').value, email: v('e').value,
+    cv: v('cv').files.length ? v('cv').files[0].name : '', shots: v('shot').files.length}));
+  document.body.innerHTML = '<h1>Thank you for applying!</h1>';
+};
+</script>

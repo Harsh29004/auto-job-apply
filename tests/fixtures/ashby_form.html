@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Full-Stack Engineer - Application</title>
+<!-- Built like a real Ashby form: required fields are marked by a CSS class (no "*" text, no required attribute),
+     labels point at a wrapper id instead of the input, the country box is a type-ahead, and the page refuses to
+     submit while a required answer is missing ("Missing entry for required field"). -->
+<form id="f">
+  <div class="ashby-application-form-field-entry">
+    <label class="_heading _required ashby-application-form-question-title" for="path-1">Name</label>
+    <input name="_systemfield_name"></div>
+  <div class="ashby-application-form-field-entry">
+    <label class="_heading _required ashby-application-form-question-title" for="path-2">Email</label>
+    <input type="email" name="_systemfield_email"></div>
+  <div class="ashby-application-form-field-entry">
+    <label class="_heading _required ashby-application-form-question-title" for="path-3">Location</label>
+    <div class="ashby-application-form-question-description"><p>Country you're currently residing in</p></div>
+    <input id="loc" placeholder="Start typing..." role="combobox" aria-autocomplete="list" autocomplete="off">
+    <ul id="lb" role="listbox" style="display:none"></ul></div>
+  <div class="ashby-application-form-field-entry">
+    <label class="_heading _required ashby-application-form-question-title" for="path-4">Resume</label>
+    <input type="file" name="_systemfield_resume"></div>
+  <div class="ashby-application-form-field-entry">
+    <label class="_heading _required ashby-application-form-question-title" for="path-5">How did you hear about Acme?</label>
+    <label><input type="radio" name="src" value="I'm a user"> I'm a user</label>
+    <label><input type="radio" name="src" value="Job board"> Job board</label>
+    <label><input type="radio" name="src" value="Referral"> Referral</label></div>
+  <button type="submit">Submit Application</button>
+</form>
+<div id="err"></div>
+<script>
+const countries = ["India", "Indonesia", "United States"];
+const loc = document.getElementById("loc"), lb = document.getElementById("lb");
+let chosen = "";
+function show() {
+  const q = loc.value.toLowerCase();
+  lb.innerHTML = countries.filter(c => c.toLowerCase().includes(q)).map(c => `<li role="option">${c}</li>`).join("");
+  lb.style.display = "block";
+  lb.querySelectorAll("li").forEach(li => li.onclick = () => { chosen = li.textContent; loc.value = chosen; lb.style.display = "none"; });
+}
+["focus", "input", "click"].forEach(ev => loc.addEventListener(ev, show));
+document.getElementById("f").onsubmit = ev => {
+  ev.preventDefault();
+  const q = s => document.querySelector(s);
+  const missing = [];
+  if (!q("[name=_systemfield_name]").value) missing.push("name");
+  if (!chosen) missing.push("location");
+  if (!q("[name=src]:checked")) missing.push("how did you hear");
+  if (!q("[name=_systemfield_resume]").files.length) missing.push("resume");
+  if (missing.length) { q("#err").textContent = "Missing entry for required field: " + missing.join(", "); return; }
+  localStorage.setItem("ashby", JSON.stringify({loc: chosen, src: q("[name=src]:checked").value}));
+  document.body.innerHTML = "<h1>Application submitted!</h1><p>Thank you for applying</p>";
+};
+</script>

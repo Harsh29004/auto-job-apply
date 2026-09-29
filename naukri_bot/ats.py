@@ -36,12 +36,20 @@ ATS_HOSTS = {
     "forms.gle": "googleforms",
     "docs.google.com": "googleforms",
     "doubleclick.net": "redirect",
+    "arc.dev": "arc",
+    "landing.jobs": "landingjobs",
+    "forms.office.com": "msforms",
+    "forms.cloud.microsoft": "msforms",
+    "jobright.ai": "jobright",
+    "alignerr.com": "alignerr",
+    "micro1.ai": "micro1",
 }
 
 # These need an account (sign-up + email verification) before applying,
 # so the bot hands them to you as "manual" instead of guessing.
 LOGIN_REQUIRED = {"workday", "oracle", "taleo", "successfactors", "icims", "brassring",
-                  "accenture", "darwinbox", "linkedin", "instahyre", "hirist", "superset"}
+                  "accenture", "darwinbox", "linkedin", "instahyre", "hirist", "superset", "arc", "landingjobs",
+                  "jobright", "alignerr", "micro1"}
 
 
 def detect_ats(url: str) -> str:

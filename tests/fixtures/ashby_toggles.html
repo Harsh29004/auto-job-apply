@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AI Research Intern - Application</title>
+<!-- Like Ashby: Yes/No questions are a single checkbox with no label of its own (value "on"). -->
+<form id="f">
+  <label for="n">Full Legal Name*</label><input id="n" name="name" required>
+  <label for="e">Email*</label><input id="e" name="email" type="email" required>
+  <label for="r">Resume*</label><input id="r" name="resume" type="file" required>
+  <fieldset><legend>Are you currently authorized to work lawfully in the United States?*</legend>
+    <input type="checkbox" name="auth" required></fieldset>
+  <fieldset><legend>Will you now or in the future require employment-based immigration sponsorship?*</legend>
+    <input type="checkbox" name="sponsor" required></fieldset>
+  <fieldset><legend>Are you expected to complete a master's or PhD program in Fall 2027?*</legend>
+    <input type="checkbox" name="masters" required></fieldset>
+  <fieldset><legend>I confirm that the information I provided is accurate</legend>
+    <input type="checkbox" name="accurate"></fieldset>
+  <button type="submit">Submit Application</button>
+</form>

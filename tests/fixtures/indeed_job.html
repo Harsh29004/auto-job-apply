@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Python Developer - Acme - Indeed</title>
+<!-- An Indeed job page. ?kind= indeed (Apply now -> form in this tab) | tab (form in a new tab)
+     | hard (the employer asks something the bot can't answer)
+     | external (Apply on company site) | applied (already applied) -->
+<h1 data-testid="jobsearch-JobInfoHeader-title">Python Developer<br>- job post</h1>
+<div data-testid="inlineHeader-companyName">Acme</div>
+<div data-testid="inlineHeader-companyLocation">Pune, Maharashtra</div>
+<div id="apply"></div>
+<div id="jobDescriptionText">We build ML services in Python and PyTorch. 0-1 years of experience.
+  Research applied to real products; your application has a real impact.</div>
+<script>
+const kind = new URLSearchParams(location.search).get('kind') || 'indeed';
+const box = document.getElementById('apply');
+if (kind === 'indeed')
+  box.innerHTML = '<button id="indeedApplyButton" onclick="location.href=\'indeed_apply.html\'">Apply now</button>';
+if (kind === 'hard')
+  box.innerHTML = '<button id="indeedApplyButton" onclick="location.href=\'indeed_apply.html?hard=1\'">Apply now</button>';
+if (kind === 'tab')
+  box.innerHTML = '<button id="indeedApplyButton" onclick="window.open(\'indeed_apply.html\')">Apply now</button>';
+if (kind === 'external')
+  box.innerHTML = `<a href="http://localhost:${location.port}/job.html" target="_blank"
+                     aria-label="Apply on company site (opens in a new tab)">Apply on company site</a>`;
+if (kind === 'applied')
+  box.innerHTML = '<button id="indeedApplyButton" disabled>Applied</button>';
+</script>

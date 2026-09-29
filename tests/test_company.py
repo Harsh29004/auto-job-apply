@@ -1,9 +1,5 @@
 """Company-site bot tests. Browser tests run against local fixture pages only."""
 import dataclasses
-import functools
-import http.server
-import threading
-from pathlib import Path
 
 import pytest
 
@@ -11,8 +7,6 @@ from naukri_bot.answers import Answerer
 from naukri_bot.ats import detect_ats, needs_login
 from naukri_bot.company import SCAN_JS, CompanyApplier, FieldFiller, build_email, email_from_href, split_name
 from naukri_bot.storage import Storage
-
-FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_detect_ats():
@@ -72,18 +66,7 @@ def test_build_email(cfg, tmp_path):
     assert [p.get_filename() for p in msg.iter_attachments()] == ["cv.pdf"]
 
 
-# ---------------------------------------------------------------- browser tests
-@pytest.fixture(scope="module")
-def server():
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(FIXTURES))
-    handler.log_message = lambda *a: None
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
-    yield f"http://127.0.0.1:{httpd.server_address[1]}"
-    httpd.shutdown()
-
-
+# ---------------------------------------------------------------- browser tests (server: conftest.py)
 @pytest.fixture
 def applier(cfg, tmp_path):
     db = Storage(tmp_path / "t.db")
@@ -183,3 +166,104 @@ def test_linkedin_style_contact_step(applier, server, query, changes):
     assert missing == [] and state["cc"] == "India (+91)" and state["changes"] == changes
     assert state["phone"] == applier.answerer.phone_numbers()[1]  # national number: the code has its own dropdown
     assert state["city"]
+
+
+def test_form_on_hidden_tab_and_screenshot_box(applier, server):
+    """The form is on a hidden tab behind 'Apply': open it, fill it, and put the resume only in the CV box."""
+    status, detail = applier.apply_job(job(server + "/tabbed.html", "Junior Full-Stack Developer"))
+    assert status == "applied", detail
+    sub = applier.page.evaluate("JSON.parse(localStorage.getItem('tabbed'))")
+    assert sub["name"] == applier.cfg.profile["name"] and sub["email"] == applier.cfg.profile["email"]
+    assert sub["cv"].endswith("_Resume.pdf") and sub["shots"] == 0
+
+
+def test_resume_only_goes_into_resume_boxes():
+    ok = CompanyApplier.resume_upload
+    assert ok("cv or resume *") and ok("resume/cv attach resume/cv") and ok("upload file") and ok("")
+    assert not ok("attach a screenshot of your internet speed") and not ok("cover letter") and not ok("profile photo")
+    assert not ok("autofill from resume")
+
+
+def test_label_beats_placeholder(cfg):
+    f = FieldFiller(cfg, Answerer(cfg.profile, cfg.skills))
+    field = {"label": "LinkedIn profile URL *", "placeholder": "https://linkedin.com/in/your-name", "name": "",
+             "tag": "input", "type": "text", "options": []}
+    assert f.value_for(field, "AI Engineer", "Acme") == (cfg.profile.get("linkedin") or None)
+
+
+def test_share_job_widget_is_not_a_form(applier):
+    applier.page.set_content("""<form><label for=a>Your Name</label><input id=a>
+        <label for=b>Recipient's Email address</label><input id=b type=email>
+        <label for=c>Your Email address</label><input id=c type=email><button>Send</button></form>""")
+    assert applier.scan() == (None, [])
+
+
+def test_yes_no_toggle_checkboxes_are_answered_honestly(applier, server):
+    """Ashby Yes/No toggles (one unlabelled checkbox each) must not all be ticked as 'consent'."""
+    applier.answerer.job_location = "United States (Remote)"
+    applier.open(server + "/ashby_toggles.html")
+    frame, fields = applier.scan()
+    missing = applier.fill(frame, fields, "AI Research Intern", "Acme")
+    ticked = applier.page.evaluate("[...document.querySelectorAll('input[type=checkbox]:checked')].map(e => e.name)")
+    assert "auth" not in ticked and "masters" not in ticked          # never claim US work rights / a degree plan
+    assert "sponsor" in ticked and "accurate" in ticked              # true: needs sponsorship; a plain confirmation
+    assert any("authorized to work" in m for m in missing)            # required and the answer is No -> you decide
+
+
+def test_gmail_login_rejected_once_stops_emails(cfg, tmp_path, monkeypatch):
+    import smtplib
+    pdf = tmp_path / "cv.pdf"
+    pdf.write_bytes(b"%PDF-1.4 test")
+    bot = CompanyApplier(dataclasses.replace(cfg, smtp_email="me@gmail.com", smtp_password="x"),
+                         Storage(tmp_path / "t.db"), submit=True, headless=True)
+    bot.resume = pdf
+    logins = []
+
+    class FakeSMTP:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def login(self, *a):
+            logins.append(1)
+            raise smtplib.SMTPAuthenticationError(535, b"Username and Password not accepted")
+
+    monkeypatch.setattr(smtplib, "SMTP_SSL", FakeSMTP)
+    job = {"job_id": "1", "title": "AI Engineer", "company": "Acme"}
+    assert bot.send_email("hr@acme.com", job)[0] == "failed"
+    assert bot.send_email("hr@beta.com", job)[0] == "failed"
+    assert len(logins) == 1  # tried Gmail once, not once per job
+
+
+def test_ashby_required_country_and_source(applier, server):
+    """Ashby: required-by-CSS-class fields, a country type-ahead labelled by its box, a 'how did you hear' radio."""
+    status, detail = applier.apply_job(job(server + "/ashby_form.html", "Full-Stack Engineer"))
+    assert status == "applied", detail
+    sub = applier.page.evaluate("JSON.parse(localStorage.getItem('ashby'))")
+    assert sub == {"loc": "India", "src": "Job board"}
+
+
+def test_only_the_application_form_is_filled(applier, server):
+    status, detail = applier.apply_job(job(server + "/multiform.html", "ML Engineer"))
+    assert status == "applied", detail
+    sub = applier.page.evaluate("JSON.parse(localStorage.getItem('multi'))")
+    assert sub["email"] == applier.cfg.profile["email"] and sub["cv"] == 1
+    assert applier.page.evaluate("localStorage.getItem('connected')") is None
+
+
+def test_form_cleared_after_submit_is_not_failed(applier, server):
+    """A form that clears itself after sending: 'unconfirmed' (never retried), not 'failed' (would apply twice)."""
+    status, detail = applier.apply_job(job(server + "/reset_form.html", "Data Engineer"))
+    assert status == "unconfirmed" and "cleared" in detail, detail
+    assert applier.page.evaluate("localStorage.getItem('sent')") == "1"
+
+
+def test_company_asks_for_email_not_contact_form(applier, server):
+    status, detail = applier.apply_job(job(server + "/reset_form.html?ask=email", "Data Engineer"))
+    assert "jobs@acme.example" in detail      # routed to email (manual here: no SMTP in tests)
+    assert applier.page.evaluate("localStorage.getItem('sent')") is None

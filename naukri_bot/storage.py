@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS unanswered (
 """
 
 # Statuses after which we never touch the job again.
-FINAL = {"applied", "already_applied", "unconfirmed"}
+FINAL = {"applied", "already_applied", "unconfirmed", "expired", "walk_in"}
 
 
 class Storage:

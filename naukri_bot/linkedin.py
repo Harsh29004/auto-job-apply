@@ -19,7 +19,7 @@ from playwright.sync_api import sync_playwright
 from .company import SCAN_JS, CompanyApplier
 from .config import Config
 from .filters import evaluate, min_years_required  # noqa: F401  (min_years_required re-exported)
-from .foreign import HARD_RESTRICTION, RESTRICTED_TEXT, location_open, offers_sponsorship
+from .foreign import abroad_restriction, location_open
 from .models import Job
 from .storage import Storage
 
@@ -30,6 +30,16 @@ MODAL = ".jobs-easy-apply-modal, div[data-test-modal][role=dialog], .artdeco-mod
 SENT_TEXT = re.compile(r"application (was )?sent|you applied|applied \d|your application was sent", re.I)
 LIMIT_TEXT = re.compile(r"(reached|exceeded) (the|your)? ?(daily )?(easy apply|application) limit|"
                         r"limit daily submissions|try again tomorrow", re.I)
+
+SENT_JS = r"""
+() => {
+  const roots = [document];
+  for (let k = 0; k < roots.length; k++) for (const el of roots[k].querySelectorAll('*')) if (el.shadowRoot) roots.push(el.shadowRoot);
+  const re = /your application was sent|application (was )?sent to|^\s*application submitted\s*$/i;
+  return roots.some(r => [...r.querySelectorAll('h1, h2, h3, [role=dialog] h2, [role=alert], .artdeco-toast-item')]
+    .some(e => (e.offsetWidth || e.offsetHeight) && re.test((e.innerText || '').trim())));
+}
+"""
 
 CARDS_JS = r"""
 () => [...document.querySelectorAll('li[data-occludable-job-id], div[data-job-id]')].map(li => {
@@ -253,7 +263,14 @@ class LinkedInBot:
             return False
 
     def submitted(self) -> bool:
-        return self.has_text(SENT_TEXT) or self.has_text(re.compile(r"^\s*Application submitted\s*$", re.I))
+        if self.has_text(SENT_TEXT) or self.has_text(re.compile(r"^\s*Application submitted\s*$", re.I)):
+            return True
+        # get_by_text only checks the first few matches; a job page has many hidden ones - look at the
+        # visible headings / dialogs themselves (shadow roots included)
+        try:
+            return bool(self.page.evaluate(SENT_JS))
+        except PWError:
+            return False
 
     def wait_submitted(self, seconds: int = 12) -> bool:
         deadline = time.time() + seconds
@@ -270,15 +287,33 @@ class LinkedInBot:
         if btn is None:
             url = self.external_apply_url()
             return ("external", url) if url else ("external", "no Easy Apply and no company link")
-        btn.click()
-        try:
-            self.page.locator(".jobs-easy-apply-modal").first.wait_for(state="visible", timeout=10000)
-        except PWError:
+        if not self.open_easy_apply(job, btn):
             if self.has_text(LIMIT_TEXT):
                 raise LinkedInQuota("Easy Apply limit")
             self.snapshot(f"no_modal_{job.job_id}")
             return "error", "Easy Apply dialog did not open"
         return self.fill_modal(job)
+
+    def open_easy_apply(self, job: Job, btn) -> bool:
+        """LinkedIn's new Easy Apply button ignores automated clicks (mouse and keyboard alike, since
+        Sep 2026), but the job's apply URL opens the same dialog. Fall back to clicking."""
+        modal = self.page.locator(".jobs-easy-apply-modal").first
+        job_url = self.page.url
+        try:
+            self.page.goto(f"{BASE}/jobs/view/{job.job_id.removeprefix('li-')}/apply/?openSDUIApplyFlow=true",
+                           wait_until="domcontentloaded")
+            modal.wait_for(state="visible", timeout=12000)
+            return True
+        except PWError:
+            pass
+        try:
+            self.page.goto(job_url, wait_until="domcontentloaded")
+            self.page.wait_for_timeout(3000)
+            (self.easy_apply_button() or btn).click()
+            modal.wait_for(state="visible", timeout=8000)
+            return True
+        except PWError:
+            return False
 
     def modal_button(self, *labels: str):
         modal = self.page.locator(MODAL).first
@@ -430,12 +465,17 @@ class LinkedInBot:
         for kw in self.li["keywords"]:
             for loc in self.li["locations"]:
                 for page_no in range(self.li["pages_per_search"]):
-                    cards = self.search(kw, loc, page_no)
+                    try:
+                        cards = self.search(kw, loc, page_no)
+                    except PWError as e:  # a slow page must not end the whole LinkedIn step
+                        log.warning("Search '%s' in %s failed: %s", kw, loc, str(e).splitlines()[0][:100])
+                        continue
                     for card in cards:
                         if done >= limit:
                             return stats
                         job_id = f"li-{card['id']}"
-                        if card["applied"] or self.db.is_done(job_id) or self.db.status(job_id):
+                        # retry jobs that failed with an error (e.g. the Easy Apply dialog did not open)
+                        if card["applied"] or self.db.status(job_id) not in (None, "error"):
                             continue
                         key = (card["title"].lower(), card["company"].lower())
                         if key in seen_titles:
@@ -444,19 +484,29 @@ class LinkedInBot:
                         # quick title check before opening the job
                         pre = Job(job_id=job_id, title=card["title"], company=card["company"],
                                   url="x")
+                        # LinkedIn re-posts the same job under new ids: already queued -> don't open it again
+                        if self.queue.conn.execute(
+                                "SELECT 1 FROM external_jobs WHERE lower(title)=? AND lower(company)=?", key).fetchone():
+                            self.db.record(pre, "external", "already queued (re-post)")
+                            continue
                         ok, reason, _ = evaluate(pre, self.cfg.filters, self.cfg.skills)
                         if not ok and not reason.startswith("low skill"):
                             self.db.record(pre, "skipped", reason)
                             continue
-                        job = self.job_details(card)
+                        try:
+                            job = self.job_details(card)
+                        except PWError as e:
+                            log.info("   could not open job %s: %s", card["id"], str(e).splitlines()[0][:100])
+                            continue
                         ok, reason, score = evaluate(job, self.cfg.filters, self.cfg.skills)
                         if ok and re.search(r"\bunpaid\b|no stipend|without stipend", job.description, re.I):
                             ok, reason = False, "unpaid (description)"
-                        if ok and not location_open(job.location, self.cfg.foreign.get("countries") or ["india"]):
-                            # job abroad: skip when the ad requires local work rights you don't have
-                            hit = HARD_RESTRICTION.search(job.description) or RESTRICTED_TEXT.search(job.description)
-                            if hit and not offers_sponsorship(job.description):
-                                ok, reason = False, f"restricted: {hit.group(0)[:50]}"
+                        countries = self.cfg.foreign.get("countries") or ["india"]
+                        if ok and not location_open(job.location, countries):
+                            # job abroad: skip when the title or ad requires local work rights you don't have
+                            why = abroad_restriction(job.title, job.description, countries)
+                            if why:
+                                ok, reason = False, why
                         if not ok:
                             self.db.record(job, "skipped", reason, score)
                             continue

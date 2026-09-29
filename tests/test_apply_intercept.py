@@ -50,3 +50,43 @@ def test_shorten_rejected(cfg, tmp_path):
     assert bot._shorten_rejected(data, js)
     assert len(data["applyData"]["J1"]["answers"]["9"]) < len(long) * 0.65
     assert not bot._shorten_rejected(data, {"jobs": [{"jobId": "J1"}]})
+
+
+def test_disabled_send_after_skip_chip(cfg, tmp_path):
+    """'Skip this question' sends the answer itself; Naukri's Send button stays disabled (empty text box).
+    Clicking Send must not hang for 20 s and fail the job."""
+    import time
+    from playwright.sync_api import sync_playwright
+    bot = make_bot(cfg, tmp_path)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        bot.page = browser.new_page()
+        bot.page.set_content('<div class="chatbot_Drawer"><div class="chatbot_Chip">Skip this question</div>'
+                             '<button class="sendMsg" disabled>Save</button></div>')
+        start = time.time()
+        bot._click_save(bot.page.locator(".chatbot_Drawer"), chip=True)
+        assert time.time() - start < 6
+        browser.close()
+
+
+def test_text_question_with_skip_chip_gets_typed_answer(cfg, tmp_path):
+    """Naukri shows a text box plus a 'Skip this question' chip: type the CTC when it is known."""
+    import dataclasses
+    from playwright.sync_api import sync_playwright
+    from naukri_bot.models import Job
+    bot = make_bot(dataclasses.replace(cfg, profile=dict(cfg.profile, current_ctc_lpa=3)), tmp_path)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        bot.page = browser.new_page()
+        bot.page.set_content("""
+          <div class="chatbot_Drawer"><ul><li class="botItem">What is your current CTC in Lacs per annum?</li></ul>
+            <div class="chatbot_Chip">Skip this question</div>
+            <div contenteditable="true" class="textArea"></div><button class="sendMsg">Save</button></div>
+          <script>document.querySelector('.sendMsg').onclick = () => {
+            document.body.innerHTML = '<p>You have successfully applied</p>'; window.typed = true; };
+            document.querySelector('.chatbot_Chip').onclick = () => { window.skipped = true; };</script>""")
+        bot._baseline = ""
+        status, _ = bot._finish_apply(Job(job_id="1", title="x", company="y", url="u"))
+        assert status == "applied"
+        assert bot.page.evaluate("window.typed === true && !window.skipped")
+        browser.close()

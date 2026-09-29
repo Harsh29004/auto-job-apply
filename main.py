@@ -1,6 +1,6 @@
-"""Unified auto job apply bot -- Naukri, LinkedIn, Company sites, Foreign jobs.
+"""Unified auto job apply bot -- Naukri, LinkedIn, Indeed, Company sites, Foreign jobs.
 
-  python main.py                         # run ALL bots (Naukri -> LinkedIn -> Company)
+  python main.py                         # run EVERYTHING (see `all` below) - this is what run_bot.bat does
   python main.py naukri --dry-run        # Naukri: search + filter only
   python main.py naukri --max 5          # Naukri: apply to at most 5
   python main.py naukri --login          # Naukri: log in once, save session
@@ -13,6 +13,11 @@
   python main.py linkedin --report      # LinkedIn: export CSV
   python main.py linkedin --then-company 5   # after Easy Apply, do 5 company-site jobs
 
+  python main.py indeed --login         # Indeed: log in once (emailed code / captcha in the browser)
+  python main.py indeed --dry-run       # Indeed: fill the apply steps but don't submit
+  python main.py indeed --max 5         # Indeed: apply to 5 jobs
+  python main.py indeed --report        # Indeed: export CSV
+
   python main.py company                # apply to pending company-site jobs
   python main.py company --no-submit    # fill but don't submit
   python main.py company --assist 120   # fill, then you review + submit
@@ -24,8 +29,10 @@
   python main.py foreign --apply --max 5       # apply to 5 foreign jobs
   python main.py foreign --list         # list saved foreign jobs
 
-  python main.py all                    # run Naukri → LinkedIn → Company sequentially
-  python main.py all --dry-run          # all three in dry-run mode
+  python main.py all                    # Naukri -> LinkedIn -> Indeed -> remote job boards -> every pending
+                                        #   company-site job -> data/applied_companies.csv
+  python main.py all --dry-run          # everything in preview mode (nothing is submitted)
+  python main.py all --skip indeed,naukri   # leave some steps out
   python main.py report                 # combined report for all platforms
 """
 from __future__ import annotations
@@ -36,6 +43,7 @@ import sys
 from datetime import datetime
 
 from naukri_bot.answers import Answerer
+from naukri_bot.applied import export_applied
 from naukri_bot.bot import NaukriBot, QuotaReached
 from naukri_bot.config import load_config
 from naukri_bot.models import Job
@@ -73,10 +81,23 @@ def naukri_report(cfg, db):
             print(f"  ({seen}x) {q}" + (f"   options: {opts}" if opts else ""))
 
 
+def applied_summary(cfg):
+    path, n = export_applied(cfg.data_dir)
+    print(f"\nAll applications so far ({n}) -> {path}")
+
+
 def linkedin_report(cfg, db):
-    out = cfg.data_dir / "linkedin_jobs.csv"
+    board_report(cfg, db, "LinkedIn", "linkedin_jobs.csv")
+
+
+def indeed_report(cfg, db):
+    board_report(cfg, db, "Indeed", "indeed_jobs.csv")
+
+
+def board_report(cfg, db, name, csv_name):
+    out = cfg.data_dir / csv_name
     n = db.export_csv(out)
-    print(f"\n[LinkedIn] Jobs ({n}) -> {out}")
+    print(f"\n[{name}] Jobs ({n}) -> {out}")
     print("Status counts:", db.counts(), "| applied today:", db.applied_today())
     answerer = Answerer(cfg.profile, cfg.skills, cfg.custom_answers)
     rows = [r for r in db.unanswered() if answerer.answer(r[0]) is None]
@@ -153,6 +174,37 @@ def cmd_linkedin(args, cfg):
         db.close()
 
 
+def cmd_indeed(args, cfg):
+    """Run the Indeed apply bot."""
+    from naukri_bot.indeed import IndeedBot
+
+    log = logging.getLogger("indeed")
+    db = Storage(cfg.data_dir / "indeed.db")
+    try:
+        if args.report:
+            indeed_report(cfg, db)
+            return 0
+        with IndeedBot(cfg, db, dry_run=args.dry_run, headless=args.headless) as bot:
+            if args.login:
+                return 0 if bot.login() else 1
+            stats = bot.run(args.max)
+            log.info("Done: %s", stats)
+        if args.then_company:
+            from naukri_bot.company import CompanyApplier
+            queue = Storage(cfg.data_dir / "naukri.db")
+            try:
+                with CompanyApplier(cfg, queue, submit=not args.dry_run, headless=args.headless) as company:
+                    cstats = company.run(args.then_company, sources=("indeed",))
+                log.info("Company-site applications: %s", cstats)
+            finally:
+                queue.close()
+        indeed_report(cfg, db)
+        applied_summary(cfg)
+        return 0
+    finally:
+        db.close()
+
+
 def cmd_company(args, cfg):
     """Apply to company-site jobs saved by Naukri/LinkedIn bots."""
     from naukri_bot.company import CompanyApplier, write_manual_page
@@ -163,13 +215,15 @@ def cmd_company(args, cfg):
         if not args.list:
             with CompanyApplier(cfg, db, submit=not args.no_submit, headless=args.headless,
                                 assist_seconds=args.assist) as bot:
-                stats = bot.run(args.max, retry_manual=args.retry)
+                stats = bot.run(args.max, retry_manual=args.retry,
+                                statuses=("pending", "failed") if args.retry_failed and not args.retry else None)
             log.info("Done: %s", stats)
         n = db.export_external_csv(cfg.data_dir / "company_site_jobs.csv")
         page = cfg.data_dir / "manual_apply.html"
         m = write_manual_page(db, page)
         print(f"\n[Company] Company-site jobs: {db.external_counts()}  (all {n} -> data/company_site_jobs.csv)")
         print(f"{m} jobs still need you -> {page}")
+        applied_summary(cfg)
         return 0
     finally:
         db.close()
@@ -216,65 +270,100 @@ def cmd_foreign(args, cfg):
         db.close()
 
 
+STEPS = ("naukri", "linkedin", "indeed", "foreign", "company")
+
+
+def banner(n, title):
+    print("\n" + "=" * 60)
+    print(f"  STEP {n}/{len(STEPS)} - {title}")
+    print("=" * 60)
+
+
 def cmd_all(args, cfg):
-    """Run Naukri → LinkedIn → Company sequentially."""
+    """Every bot, one after the other: Naukri -> LinkedIn -> Indeed -> remote job boards -> all pending
+    company-site jobs (the ones every board found, incl. emailing resumes where a posting asks for it).
+    A step that fails (login, site change ...) is logged and the next one still runs."""
     log = logging.getLogger("all")
+    skip = {s.strip().lower() for s in (args.skip or "").split(",") if s.strip()}
 
-    # 1. Naukri
-    print("\n" + "=" * 60)
-    print("  STEP 1/3 — NAUKRI")
-    print("=" * 60)
-    db_naukri = Storage(cfg.data_dir / "naukri.db")
-    try:
-        with NaukriBot(cfg, db_naukri, dry_run=args.dry_run, headless=args.headless or None) as bot:
-            if bot.login():
-                stats = bot.run(args.max)
-                log.info("[Naukri] %s", stats)
-            else:
-                log.warning("[Naukri] login failed, skipping")
-        naukri_report(cfg, db_naukri)
-    except Exception as e:
-        log.error("[Naukri] error: %s", e)
-    finally:
-        db_naukri.close()
+    def step(n, name, title, fn):
+        if name in skip:
+            log.info("[%s] skipped (--skip)", title)
+            return
+        banner(n, title)
+        try:
+            fn()
+        except KeyboardInterrupt:
+            raise
+        except (Exception, SystemExit) as e:  # noqa: BLE001 - one bot failing must not stop the others
+            log.error("[%s] stopped: %s", title, e)
 
-    # 2. LinkedIn
-    print("\n" + "=" * 60)
-    print("  STEP 2/3 — LINKEDIN")
-    print("=" * 60)
-    from naukri_bot.linkedin import LinkedInBot
-    db_li = Storage(cfg.data_dir / "linkedin.db")
-    try:
-        with LinkedInBot(cfg, db_li, dry_run=args.dry_run, headless=args.headless) as bot:
-            if bot.login():
-                stats = bot.run(args.max)
-                log.info("[LinkedIn] %s", stats)
-            else:
-                log.warning("[LinkedIn] login failed, skipping")
-        linkedin_report(cfg, db_li)
-    except Exception as e:
-        log.error("[LinkedIn] error: %s", e)
-    finally:
-        db_li.close()
+    def naukri():
+        db = Storage(cfg.data_dir / "naukri.db")
+        try:
+            with NaukriBot(cfg, db, dry_run=args.dry_run, headless=args.headless or None) as bot:
+                if args.dry_run or bot.login():
+                    log.info("[Naukri] %s", bot.run(args.max))
+                else:
+                    log.warning("[Naukri] login failed, skipping")
+            naukri_report(cfg, db)
+        finally:
+            db.close()
 
-    # 3. Company-site
-    print("\n" + "=" * 60)
-    print("  STEP 3/3 — COMPANY SITES")
-    print("=" * 60)
-    from naukri_bot.company import CompanyApplier, write_manual_page
-    db_company = Storage(cfg.data_dir / "naukri.db")
-    try:
-        with CompanyApplier(cfg, db_company, submit=not args.dry_run, headless=args.headless) as bot:
-            stats = bot.run(args.max)
-        log.info("[Company] %s", stats)
-        n = db_company.export_external_csv(cfg.data_dir / "company_site_jobs.csv")
-        write_manual_page(db_company, cfg.data_dir / "manual_apply.html")
-        print(f"[Company] {n} company-site jobs exported")
-    except Exception as e:
-        log.error("[Company] error: %s", e)
-    finally:
-        db_company.close()
+    def linkedin():
+        from naukri_bot.linkedin import LinkedInBot
+        db = Storage(cfg.data_dir / "linkedin.db")
+        try:
+            with LinkedInBot(cfg, db, dry_run=args.dry_run, headless=args.headless) as bot:
+                if bot.login():
+                    log.info("[LinkedIn] %s", bot.run(args.max))
+                else:
+                    log.warning("[LinkedIn] login failed, skipping")
+            linkedin_report(cfg, db)
+        finally:
+            db.close()
 
+    def indeed():
+        from naukri_bot.indeed import IndeedBot
+        db = Storage(cfg.data_dir / "indeed.db")
+        try:
+            with IndeedBot(cfg, db, dry_run=args.dry_run, headless=args.headless) as bot:
+                if bot.login():
+                    log.info("[Indeed] %s", bot.run(args.max))
+                else:
+                    log.warning("[Indeed] not logged in, skipping (run: python main.py indeed --login)")
+            indeed_report(cfg, db)
+        finally:
+            db.close()
+
+    def foreign():
+        from naukri_bot.foreign import collect
+        db = Storage(cfg.data_dir / "naukri.db")
+        try:
+            stats = collect(cfg, db, None, cfg.foreign)
+            log.info("[Job boards] fetched %(fetched)d, unique %(unique)d, NEW relevant saved: %(saved)d", stats)
+        finally:
+            db.close()
+
+    def company():
+        from naukri_bot.company import CompanyApplier, write_manual_page
+        db = Storage(cfg.data_dir / "naukri.db")
+        try:
+            # every pending job the boards found (or --max), not just company_apply.max_per_run
+            with CompanyApplier(cfg, db, submit=not args.dry_run, headless=args.headless) as bot:
+                log.info("[Company] %s", bot.run(args.max or 1_000_000))
+            n = db.export_external_csv(cfg.data_dir / "company_site_jobs.csv")
+            m = write_manual_page(db, cfg.data_dir / "manual_apply.html")
+            print(f"[Company] {n} company-site jobs exported, {m} need you -> data/manual_apply.html")
+        finally:
+            db.close()
+
+    for n, (name, title, fn) in enumerate([("naukri", "NAUKRI", naukri), ("linkedin", "LINKEDIN", linkedin),
+                                           ("indeed", "INDEED", indeed), ("foreign", "REMOTE JOB BOARDS", foreign),
+                                           ("company", "COMPANY SITES / GOOGLE FORMS / EMAIL", company)], 1):
+        step(n, name, title, fn)
+
+    applied_summary(cfg)
     print("\n" + "=" * 60)
     print("  ALL DONE!")
     print("=" * 60)
@@ -302,6 +391,15 @@ def cmd_report(args, cfg):
         db_li.close()
 
     print("\n" + "=" * 60)
+    print("  INDEED REPORT")
+    print("=" * 60)
+    db_in = Storage(cfg.data_dir / "indeed.db")
+    try:
+        indeed_report(cfg, db_in)
+    finally:
+        db_in.close()
+
+    print("\n" + "=" * 60)
     print("  COMPANY SITES REPORT")
     print("=" * 60)
     from naukri_bot.company import write_manual_page
@@ -315,6 +413,7 @@ def cmd_report(args, cfg):
     finally:
         db_ext.close()
 
+    applied_summary(cfg)
     return 0
 
 
@@ -347,6 +446,16 @@ def main(argv=None):
     p_linkedin.add_argument("--then-company", type=int, default=0, metavar="N",
                             help="afterwards, apply to N queued company-site jobs from LinkedIn")
 
+    # ── indeed ──
+    p_indeed = sub.add_parser("indeed", help="Indeed apply bot (Easily apply + company-site jobs)")
+    p_indeed.add_argument("--dry-run", action="store_true", help="fill the apply steps but never submit")
+    p_indeed.add_argument("--max", type=int, help="max applications this run")
+    p_indeed.add_argument("--login", action="store_true", help="only log in and save the session")
+    p_indeed.add_argument("--headless", action="store_true")
+    p_indeed.add_argument("--report", action="store_true")
+    p_indeed.add_argument("--then-company", type=int, default=0, metavar="N",
+                          help="afterwards, apply to N queued company-site jobs from Indeed")
+
     # ── company ──
     p_company = sub.add_parser("company", help="Apply on company career sites")
     p_company.add_argument("--max", type=int, help="max jobs this run")
@@ -354,6 +463,8 @@ def main(argv=None):
     p_company.add_argument("--assist", type=int, default=0, metavar="SECONDS",
                            help="fill the form, then wait for you to submit it yourself")
     p_company.add_argument("--retry", action="store_true", help="also retry manual/failed/unconfirmed jobs")
+    p_company.add_argument("--retry-failed", action="store_true",
+                           help="also retry jobs whose form showed errors (never re-sends unconfirmed ones)")
     p_company.add_argument("--headless", action="store_true")
     p_company.add_argument("--list", action="store_true", help="list saved jobs and write manual_apply.html")
 
@@ -368,17 +479,18 @@ def main(argv=None):
     p_foreign.add_argument("--headless", action="store_true")
 
     # ── all ──
-    p_all = sub.add_parser("all", help="Run Naukri -> LinkedIn -> Company sequentially")
+    p_all = sub.add_parser("all", help="Run every bot: Naukri -> LinkedIn -> Indeed -> job boards -> company sites")
     p_all.add_argument("--dry-run", action="store_true", help="dry-run all bots")
-    p_all.add_argument("--max", type=int, help="max applies per bot")
+    p_all.add_argument("--max", type=int, help="max applies per bot (company sites: default all pending)")
     p_all.add_argument("--headless", action="store_true")
+    p_all.add_argument("--skip", help=f"comma-separated steps to leave out: {', '.join(STEPS)}")
 
     # ── report ──
     sub.add_parser("report", help="Combined report for all platforms")
 
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
-    setup_logging(cfg, prefix=args.command or "naukri")
+    setup_logging(cfg, prefix=args.command or "all")
 
     # default to 'all' if no subcommand given — run every bot
     cmd = args.command or "all"
@@ -386,6 +498,7 @@ def main(argv=None):
     dispatch = {
         "naukri": cmd_naukri,
         "linkedin": cmd_linkedin,
+        "indeed": cmd_indeed,
         "company": cmd_company,
         "foreign": cmd_foreign,
         "all": cmd_all,
@@ -399,6 +512,7 @@ def main(argv=None):
                 setattr(args, attr, False)
         if not hasattr(args, "max"):
             args.max = None
+        args.skip = getattr(args, "skip", None)
 
     return dispatch[cmd](args, cfg)
 

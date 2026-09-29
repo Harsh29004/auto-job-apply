@@ -92,3 +92,52 @@ def test_timezone_region_option(a):
 
 def test_generic_single_word_option_not_matched(a):
     assert a.match_option("Artificial Intelligence and Data Science", ["Science", "Computer Science"]) is None
+
+
+def test_statement_options_are_not_number_ranges(a):
+    # "experience" -> "1 year" must not pick an option because it says "one" or mentions "n8n"
+    opts = ["A. I have integrated LLM/AI APIs with Python/JavaScript or another application",
+            "B. I have built workflows using tools such as n8n, Make, Zapier or similar automation platforms"]
+    assert a.answer("Which of the following best describes your technical experience with AI?", opts) is None
+    assert a.match_option("1", ["0-1 years", "2-4 years"]) == "0-1 years"
+
+
+def test_which_frameworks_only_lists_your_skills(a):
+    answer = a.answer("Which deep learning frameworks have you used?")
+    assert answer and all(s.lower() in a.skills for s in answer.split(", "))
+    assert "english" not in (a.answer("Which programming languages do you know?") or "").lower()
+    assert a.answer("Which tools do you use for time tracking?") is None
+
+
+def test_projects_question_follows_your_skills(a):
+    a.p = dict(a.p, project_summary="Built an LLM chatbot")
+    assert a.answer("Have you done any AI based projects?", ["Yes", "No"]) == "Yes"
+    assert a.answer("Have you built any blockchain projects?", ["Yes", "No"]) == "No"
+
+
+def test_np_means_notice_period(a):
+    assert a.answer("What is you official NP? If Serving kindly mention your LWD .") not in (None, "No")
+    assert a.answer("Are you currently serving notice period?", ["Yes", "No"]) == "No"
+
+
+def test_yes_no_location_and_long_project_questions(a):
+    a.p = dict(a.p, project_summary="Built an LLM chatbot", work_authorized_countries=["India"])
+    a.job_location = "India (Remote)"
+    assert a.answer("Are you currently located in India and legally eligible to undertake an internship in India?",
+                    ["Yes", "No"]) == "Yes"
+    assert a.answer("Have you built at least one software, Generative AI, LLM, AI agent, or API-based project?",
+                    ["Yes", "No"]) == "Yes"
+    assert a.answer("Have you built any iOS apps?", ["Yes", "No"]) == "No"
+
+
+def test_name_rule_is_only_your_name(a):
+    assert a.answer("7. Stream or Branch Name Single line text.") != a.p.get("name")
+    assert a.answer("Project name") != a.p.get("name")
+    assert a.answer("Your full name") == a.p.get("name")
+
+
+def test_and_needs_every_skill(a):
+    yn = ["Yes", "No"]
+    assert a.answer("Do you have proven professional experience with Rust and Python?", yn) == "No"
+    assert a.answer("Do you have experience with Rust or Python?", yn) == "Yes"
+    assert a.answer("Do you have experience with Python and related frameworks?", yn) == "Yes"

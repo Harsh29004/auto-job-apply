@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +23,7 @@ class Config:
     company_apply: dict = field(default_factory=dict)
     linkedin: dict = field(default_factory=dict)
     foreign: dict = field(default_factory=dict)
+    indeed: dict = field(default_factory=dict)
     email: str = ""
     password: str = ""
     smtp_email: str = ""
@@ -146,6 +148,21 @@ def load_config(path: str | Path | None = None, env_path: str | Path | None = No
         "cache_hours": env_int("FOREIGN_CACHE_HOURS") or 6,
     }
 
+    indeed = {
+        "email": os.getenv("INDEED_EMAIL", "").strip(),
+        "password": os.getenv("INDEED_PASSWORD", "").strip(),
+        # country sites: in.indeed.com, www.indeed.com (US), uk.indeed.com, ca.indeed.com ...
+        "domains": [re.sub(r"^https?://", "", d.lower()).strip("/") for d in env_list("INDEED_DOMAINS") or ["in.indeed.com"]],
+        "keywords": env_list("INDEED_KEYWORDS") or linkedin["keywords"],
+        "locations": env_list("INDEED_LOCATIONS") or [""],
+        "days": env_int("INDEED_DAYS") or 7,
+        # false = also queue "Apply on company site" jobs for company_apply.py
+        "easy_apply_only": truthy("INDEED_EASY_APPLY_ONLY", False),
+        "pages_per_search": env_int("INDEED_PAGES_PER_SEARCH") or 2,
+        "max_applies": env_int("INDEED_MAX_APPLIES") or 15,
+        "max_applies_per_day": env_int("INDEED_MAX_APPLIES_PER_DAY") or 30,
+    }
+
     return Config(
         search=search,
         filters=filters,
@@ -156,6 +173,7 @@ def load_config(path: str | Path | None = None, env_path: str | Path | None = No
         company_apply=company,
         linkedin=linkedin,
         foreign=foreign,
+        indeed=indeed,
         email=os.getenv("NAUKRI_EMAIL", "").strip(),
         smtp_email=os.getenv("SMTP_EMAIL", "").strip(),
         smtp_password=os.getenv("SMTP_APP_PASSWORD", "").replace(" ", "").strip(),

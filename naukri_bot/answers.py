@@ -105,9 +105,22 @@ def parse_range(option: str) -> tuple[float, float] | None:
     return (nums[0], nums[0])
 
 
+RANGE_WORDS = re.compile(r"\b(years?|yrs?|months?|days?|weeks?|lakhs?|lacs?|lpa|less|than|more|above|below|over|"
+                         r"under|upto|up|to|within|or|and|fresher|experience|exp|plus|min(imum)?|max(imum)?|"
+                         + "|".join(WORD_NUMBERS) + r")\b", re.I)
+
+
+def is_numeric_option(option: str) -> bool:
+    """'0-1 years', 'Less than 1', '15 Days or less', '5+' - not 'I have built one or more AI projects'
+    or 'Workflows with n8n' (a stray digit or number word must not turn a statement into a range)."""
+    return len(re.sub(r"[^a-z]", "", RANGE_WORDS.sub(" ", re.sub(r"\d+(\.\d+)?", " ", option.lower())))) <= 3
+
+
 def pick_numeric_option(value: float, options: list[str]) -> str | None:
     best, best_dist = None, float("inf")
     for opt in options:
+        if not is_numeric_option(opt):
+            continue
         rng = parse_range(opt)
         if rng is None:
             continue
@@ -186,7 +199,8 @@ class Answerer:
             return tz
         if re.search(r"nationality", q) and not re.search(r"right to work|authori[sz]|visa|sponsor", q):
             return p.get("nationality") or "Indian"
-        if re.search(r"country of (residence|origin|citizenship)|citizenship|(which|what) country "
+        if re.search(r"country (you'?re|you are|where you('re| are)?) (currently )?(resid|liv|based|locat)|"
+                     r"country of (residence|origin|citizenship)|citizenship|(which|what) country "
                      r"(do you|are you)|country (do you|are you) (live|reside|based|located)", q) and not re.search(
                 r"right to work|authori[sz]|eligib|permit|visa|sponsor|allowed to work", q):
             return p.get("country") or "India"
@@ -206,12 +220,12 @@ class Answerer:
         # --- notice period / joining ---------------------------------------
         joining = re.search(r"\bjoin", q) and re.search(r"when|how soon|available|availability|start|date|immediate|"
                                                        r"days|weeks|earliest|notice", q)
-        notice = re.search(r"notice period|\bnotice\b", q) and not re.search(
+        notice = re.search(r"notice period|\bnotice\b|\bnp\b|\blwd\b|last working day", q) and not re.search(
             r"(privacy|legal|this|the following|above|data protection|applicant|recruitment|gdpr) notice", q)
         if notice or joining or "serving notice" in q:
             if re.search(r"\b(can|will|would|are) you\b.*\b(join|joining)\b.*\b(immediate|within|asap|\d+ days)", q):
                 return YES
-            if "serving" in q:
+            if "serving" in q and not re.match(r"(what|which|how|when|please|kindly|mention)\b", q):
                 return NO
             if re.search(r"how many days|in days|number of days|\(days\)|days\?", q):
                 return str(p.get("notice_period_days", 0))
@@ -228,13 +242,17 @@ class Answerer:
         # --- location ------------------------------------------------------
         if re.search(r"relocat|willing to (move|shift|work|travel)|open to (move|work|relocat)", q):
             return p.get("willing_to_relocate") or YES
-        if re.search(r"current(ly)? (location|city|residing|based|located|staying|living)|where are you (located|based|staying|living)|residing|current address|hometown", q):
+        if re.search(r"current(ly)? (location|city|residing|based|located|staying|living)|where are you (located|based|staying|living)|residing|current address|hometown", q) \
+                and not re.match(r"(are|is|do|does|have|will|would|can)\b", q):  # "Are you located in India and ...?" is yes/no
             return p.get("current_location")
         if re.search(r"preferred (work )?location|preferred city|location preference", q):
             return p.get("preferred_location")
 
         # --- personal ------------------------------------------------------
-        if re.search(r"\b(full )?name\b", q) and "company" not in q and "college" not in q:
+        if re.search(r"\b(full )?name\b", q) and not re.search(  # your name - not the branch / college / project's
+                r"company|college|branch|stream|school|universit|institut|course|degree|project|father|mother|"
+                r"guardian|spouse|nominee|referen|referee|manager|supervisor|product|team|brand|organi[sz]ation|"
+                r"employer|recruiter|referr|city|state|country|bank|tool|framework|platform", q):
             return p.get("name")
         if re.search(r"e-?mail", q):
             return p.get("email")
@@ -248,7 +266,8 @@ class Answerer:
             return p.get("gender") or None
         if re.search(r"date of birth|\bdob\b|birth ?date", q):
             return p.get("date_of_birth") or None
-        if re.search(r"languages? (do you|you) (know|speak)|which languages|languages known", q):
+        if re.search(r"languages? (do you|you) (know|speak)|which languages|languages known", q) and \
+                not re.search(r"programming|coding|scripting|computer|software", q):
             return p.get("languages")
 
         # --- education -----------------------------------------------------
@@ -316,12 +335,13 @@ class Answerer:
             return str(p.get("self_rating", 7))
 
         # --- work authorization / visa (depends on the job's country) --------
-        auth = self._work_authorization(q)
+        auth = self._work_authorization(q, options)
         if auth is not None:
             return auth
 
         # --- shifts, time zones, work mode (candidate is flexible) ---------
-        if re.search(r"\bshifts?\b|time ?zones?|working hours|work(ing)? timings?|\b(est|pst|cst|gmt|uk|us) (hours|time)", q):
+        if re.search(r"\bshifts?\b|time ?zones?|working hours|work(ing)? timings?|\b(est|pst|cst|gmt|uk|us) (hours|time)|"
+                     r"overlap with|\b(eastern|pacific|central|us|uk) (standard )?(time|hours)\b", q):
             if not options or not any(norm(o) in ("yes", "no") for o in options):
                 if options:
                     for want in (r"\bany\b|flexible|\ball\b", r"rotational", r"night|\bus\b|\buk\b"):
@@ -337,16 +357,68 @@ class Answerer:
                 if hit:
                     return hit
 
+        # --- "Which deep learning frameworks have you used?" -> the ones on your skill list ------
+        if not options and re.search(r"\b(which|what|list|mention|name)\b.*\b(frameworks?|librar(y|ies)|tools?|"
+                                     r"languages?|databases?|platforms?|tech ?stack)\b", q):
+            listed = self._skills_in_group(q)
+            if listed:
+                return ", ".join(listed)
+
         # --- yes / no ------------------------------------------------------
         return self._yes_no(q, options)
+
+    SKILL_GROUPS = [
+        (r"deep learning|\bdl\b|neural", ["tensorflow", "pytorch", "keras", "jax"]),
+        (r"machine learning|\bml\b|data science", ["scikit-learn", "sklearn", "xgboost", "tensorflow", "pytorch", "keras",
+                                                  "pandas", "numpy"]),
+        (r"computer vision|\bcv\b|image", ["opencv", "yolo", "pytorch", "tensorflow", "mediapipe"]),
+        (r"\bnlp\b|language model|llm|generative|gen ?ai",
+         ["hugging face", "transformers", "langchain", "llamaindex", "spacy", "nltk", "openai api"]),
+        (r"front ?-?end|web|javascript|ui\b", ["react", "next.js", "angular", "vue", "html", "css", "tailwind css"]),
+        (r"back ?-?end|server|api\b", ["django", "flask", "fastapi", "node.js", "express", "express.js"]),
+        (r"database|\bdb\b|storage", ["mongodb", "mysql", "postgresql", "sqlite", "redis", "sql"]),
+        (r"cloud|devops|deploy", ["aws", "gcp", "azure", "docker", "kubernetes"]),
+        (r"programming languages?|\blanguages?\b|coding", ["python", "javascript", "typescript", "java", "c++", "c", "sql"]),
+    ]
+    SKILL_NAMES = {"pytorch": "PyTorch", "tensorflow": "TensorFlow", "scikit-learn": "scikit-learn", "sklearn": "scikit-learn",
+                   "numpy": "NumPy", "opencv": "OpenCV", "yolo": "YOLO", "mediapipe": "MediaPipe", "nltk": "NLTK",
+                   "spacy": "spaCy", "langchain": "LangChain", "llamaindex": "LlamaIndex", "openai api": "OpenAI API",
+                   "node.js": "Node.js", "express.js": "Express.js", "next.js": "Next.js", "mongodb": "MongoDB",
+                   "mysql": "MySQL", "postgresql": "PostgreSQL", "sqlite": "SQLite", "fastapi": "FastAPI", "aws": "AWS",
+                   "gcp": "GCP", "javascript": "JavaScript", "typescript": "TypeScript", "sql": "SQL", "html": "HTML",
+                   "css": "CSS", "xgboost": "XGBoost", "hugging face": "Hugging Face", "c++": "C++", "tailwind css": "Tailwind CSS"}
+
+    FILLER = {"related", "similar", "frameworks", "framework", "tools", "tool", "libraries", "library", "technologies",
+              "technology", "other", "etc", "the", "its", "their", "ecosystem", "applications", "application",
+              "development", "systems", "in", "production", "professionally", "projects", "a", "an", "any", "of"}
+
+    def _has_skills(self, text: str) -> bool:
+        """'Rust and Python' needs both; 'Rust or Python' / 'Rust/Python' needs one ('... and related tools' is not
+        a skill of its own)."""
+        text = text.strip(" ?.*")
+        if re.search(r"\bor\b|/|\beither\b", text) or not re.search(r"\band\b|,|&", text):
+            return bool(self._known_skill_in(text))
+        parts = [p for p in re.split(r"\band\b|,|&", text)
+                 if set(re.findall(r"[a-z+#.]+", p.lower())) - self.FILLER]
+        return bool(parts) and all(self._known_skill_in(p) for p in parts)
+
+    def _skills_in_group(self, q: str) -> list[str]:
+        """Your skills (only those on your list) in the group the question names."""
+        for pattern, group in self.SKILL_GROUPS:
+            if re.search(pattern, q):
+                mine = [s for s in group if s in self.skills]
+                names = list(dict.fromkeys(self.SKILL_NAMES.get(s, s.title()) for s in mine))
+                return names
+        return []
 
     COUNTRY_RE = re.compile(
         r"\b(united states|usa|u\.s\.a?\.?|us|america|canada|united kingdom|uk|britain|england|europe|eu|germany|"
         r"netherlands|ireland|france|spain|poland|australia|new zealand|singapore|uae|dubai|saudi|qatar|japan|"
         r"switzerland|sweden|india)\b", re.I)
 
-    def _work_authorization(self, q: str):
-        """Honest answers for 'authorized to work in X?' / 'need visa sponsorship?'."""
+    def _work_authorization(self, q: str, options: list[str] | None = None):
+        """Honest answers for 'authorized to work in X?' / 'need visa sponsorship?' / 'what is your US work
+        authorization?'."""
         sponsor = re.search(r"sponsor|visa|work permit|h-?1b", q)
         authorized = re.search(r"authori[sz]ed to work|legally (eligible|authori[sz]ed|able|allowed|permitted)|"
                                r"eligible to work|right to work|work authori[sz]ation|permitted to work", q)
@@ -356,7 +428,8 @@ class Answerer:
             return None
         allowed = [c.lower() for c in (self.p.get("work_authorized_countries") or ["India"])]
         found = [m.group(1).lower() for m in self.COUNTRY_RE.finditer(q)]
-        if found == ["us"] and not re.search(r"\b(in|the) us\b", q):
+        if found == ["us"] and not re.search(r"\b(in|the) us\b|\bus (work|citizen|visa|based|resident|person|"
+                                             r"employment|authori)", q):
             found = []  # "let us know" etc.
         if not found and self.job_location:  # question has no country -> use the job's location
             found = [m.group(1).lower() for m in self.COUNTRY_RE.finditer(self.job_location)
@@ -365,9 +438,28 @@ class Answerer:
                                            self.job_location, re.I):
                 return None  # a city we can't place ("London"): leave it to you instead of claiming a permit
         in_allowed = (not found) or any(c in allowed for c in found)
+        if re.match(r"(what|which|please (specify|describe|mention|select|share)|describe|specify|select|current|"
+                    r"your)\b", q):
+            return self._work_status(in_allowed, options)  # asks for a status, not yes / no
         if sponsor:
             return NO if in_allowed else YES
         return YES if in_allowed else NO
+
+    def _work_status(self, in_allowed: bool, options: list[str] | None):
+        """'What is your work authorization / visa status?' - a truthful status, never a bare "Yes"."""
+        wants = ([r"citizen", r"authori[sz]ed|permanent|no sponsorship|not require|don.?t (need|require)", r"\byes\b"]
+                 if in_allowed else
+                 [r"require|need.*sponsor|sponsorship", r"\bnone\b|not (currently )?authori|no (work )?authori",
+                  r"\bno\b", r"\bother\b"])
+        if options:
+            for want in wants:
+                hit = next((o for o in options if re.search(want, o, re.I)), None)
+                if hit:
+                    return hit
+            return None
+        home = self.p.get("nationality") or "Indian"
+        return (f"{home} citizen, authorized to work here - no sponsorship needed" if in_allowed else
+                f"{home} citizen - not currently authorized to work there; I would need visa sponsorship")
 
     # ---------------------------------------------------------------- helpers
     def dial_code(self) -> str:
@@ -464,7 +556,8 @@ class Answerer:
         r"willing|comfortable|able to|available|okay|\bok\b|open to|agree|consent|confirm|acknowledge|ready|flexible|"
         r"happy to|interested|fine with|accept|understand|certify|declare|relocat|travel|commut|background (check|"
         r"verification)|work (from|in|at) (the )?(office|onsite|on-site|remote|home|hybrid)|in[- ]person|\bmeet\b|"
-        r"night|shift|weekend|bond|start (immediately|asap|soon)|laptop|internet connection|own (computer|device)")
+        r"night|shift|weekend|bond|start (immediately|asap|soon)|laptop|internet connection|own (computer|device)|"
+        r"overlap with|time ?zone")
 
     def _yes_no(self, q: str, options: list[str] | None):
         opts = [o.lower() for o in options or []]
@@ -488,11 +581,19 @@ class Answerer:
         if any(re.search(n, q) for n in negatives):
             return NO
 
+        # "Have you done any AI based projects?" -> Yes only when the topic is one of your skills
+        proj = re.search(r"\b(done|built|worked on|made|developed|created|completed|delivered)\s+"
+                         r"(any |a |some |at least one |one or more )?(.{0,90}?)\s*(projects?|applications?|apps?)\b", q)
+        if proj and self.p.get("project_summary"):
+            topic = re.sub(r"\b(based|related|real[- ]world|live|personal|academic|college|own|end[- ]to[- ]end)\b", " ",
+                           proj.group(3)).strip(" -")
+            return YES if not topic or self._known_skill_in(topic) else NO
+
         # "Do you have experience in X?" -> Yes only if X is a resume skill
         m = re.search(r"(experience|hands[- ]on|worked|knowledge|familiar|proficient|expertise|skilled)\b.*?"
                       r"\b(in|with|on|of|about)\s+(.+)", q)
         if m and not re.search(r"comfortable|willing|okay|ok\b|fine|ready|open", q):
-            return YES if self._known_skill_in(m.group(3)) else NO
+            return YES if self._has_skills(m.group(3)) else NO
         return YES if self.POSITIVE.search(q) else None
 
     @staticmethod

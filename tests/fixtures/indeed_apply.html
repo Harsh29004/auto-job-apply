@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Indeed Apply</title>
+<!-- Shaped like Indeed's apply form (smartapply): one step per page, "Continue", then "Submit your application".
+     Required answers are checked like Indeed does; the answers end up in localStorage 'indeed_submitted'. -->
+<main id="app"></main>
+<script>
+const answers = {};
+const steps = [
+  {h: 'Add your contact information', html: `
+     <label for="fn">First name</label><input id="fn" name="firstName" required>
+     <label for="ln">Last name</label><input id="ln" name="lastName" required>
+     <label for="ph">Phone number</label><input id="ph" name="phoneNumber" type="tel">
+     <label for="city">City, State</label><input id="city" name="location">`},
+  {h: 'Add a resume for the employer', html: `
+     <label><input type="radio" name="resume" value="Indeed Resume"> Indeed Resume</label>
+     <label><input type="radio" name="resume" value="Saved_Resume.pdf" checked> Saved_Resume.pdf</label>
+     <input type="file" id="upload" name="resumeFile" style="display:none">`},
+  {h: 'Enter a past job that shows relevant experience', html: `
+     <label for="jt">Job title</label><input id="jt" name="jobTitle">
+     <label for="co">Company</label><input id="co" name="companyName">`},
+  {h: 'Answer these questions from the employer', html: `
+     <label for="yrs">How many years of Python experience do you have?</label>
+     <input id="yrs" name="pythonYears" type="number" required>
+     <fieldset><legend>Are you willing to relocate?</legend>
+       <label><input type="radio" name="relocate" value="Yes" required> Yes</label>
+       <label><input type="radio" name="relocate" value="No"> No</label></fieldset>` +
+     (location.search.includes('hard') ? `<label for="dates">Please list 2-3 dates and time ranges that you could do
+       an interview.</label><textarea id="dates" name="dates" required></textarea>` : '')},
+  {h: 'Please review your application', html: '', last: true},
+];
+let i = 0;
+function render() {
+  const s = steps[i];
+  document.getElementById('app').innerHTML = `<h1>${s.h}</h1><form onsubmit="return false">${s.html}
+    <div id="err" role="alert"></div>
+    <button type="button" id="btn">${s.last ? 'Submit your application' : 'Continue'}</button></form>`;
+  document.getElementById('btn').onclick = next;
+}
+function next() {
+  const form = document.querySelector('form');
+  for (const el of form.querySelectorAll('input, textarea')) {
+    if (el.type === 'radio') { if (el.checked) answers[el.name] = el.value; }
+    else if (el.type !== 'file') answers[el.name] = el.value;
+  }
+  const bad = [...form.querySelectorAll('[required]')].some(el =>
+    el.type === 'radio' ? !form.querySelector(`[name="${el.name}"]:checked`) : !el.value.trim());
+  if (bad) { document.getElementById('err').textContent = 'Answer this question to continue'; return; }
+  if (steps[i].last) {
+    localStorage.setItem('indeed_submitted', JSON.stringify(answers));
+    document.getElementById('app').innerHTML = '<h1>Your application has been submitted!</h1>';
+    return;
+  }
+  i++;
+  render();
+}
+render();
+</script>

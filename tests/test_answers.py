@@ -120,6 +120,12 @@ def test_pick_numeric_nearest():
     ("Are you authorized to work in the country where this job is located?", ["Yes", "No"], "London, United Kingdom", "No"),
     ("Are you authorized to work in the country where this job is located?", ["Yes", "No"], "Pune, India", "Yes"),
     ("Please let us know if you need a visa", ["Yes", "No"], "", "No"),
+    ("Do you have US work authorization?", ["Yes", "No"], "United States (Remote)", "No"),
+    # a status question never gets a bare "Yes"
+    ("What is your current US work authorization / Visa", ["US Citizen", "Green Card", "H1B", "Require sponsorship"],
+     "United States (Remote)", "Require sponsorship"),
+    ("What is your work authorization status in India?", ["Indian citizen", "Need sponsorship"], "Pune, India",
+     "Indian citizen"),
 ])
 def test_work_authorization(cfg, question, options, job_location, expected):
     a = Answerer(dict(cfg.profile, work_authorized_countries=["India"]), cfg.skills)
@@ -145,3 +151,10 @@ def test_shift_text_answer(answerer):
 def test_self_rating(answerer):
     assert answerer.answer("From 1–10, how would you rate your current AI/ML knowledge?") == "7"
     assert answerer.answer("On a scale of 1 to 10, rate your Python skills", ["5", "6", "7", "8"]) == "7"
+
+
+def test_work_status_text_is_truthful(cfg):
+    a = Answerer(dict(cfg.profile, work_authorized_countries=["India"], nationality="Indian"), cfg.skills)
+    a.job_location = "United States (Remote)"
+    answer = a.answer("What is your current US work authorization / Visa")
+    assert "not currently authorized" in answer and "sponsorship" in answer

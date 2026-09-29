@@ -35,12 +35,19 @@ log = logging.getLogger("company")
 SUCCESS_TEXT = re.compile(
     r"thank(s| you) for (applying|your (application|interest|submission))|application (has been |was )?"
     r"(received|submitted|sent)|successfully (submitted|applied|sent)|we (have )?received your (application|resume)|"
-    r"we('ll| will) (get back|be in touch|contact you|review)|form (has been )?submitted", re.I)
-ERROR_TEXT = re.compile(r"(this field is|is) required|please (fill|enter|select|complete)|invalid (email|phone|value)", re.I)
+    r"we('ll| will) (get back|be in touch|contact you|review)|form (has been )?submitted|"
+    r"thank(s| you)[.!,]? your (message|application|submission)|message (has been |was )?(sent|received)", re.I)
+# "Please send your application / CV to jobs@acme.com": the company's own instruction beats a contact form
+SEND_TO_EMAIL = re.compile(r"(send|e-?mail|mail|forward|submit)\s+(us\s+)?(your|an?)\s+(application|cv|resume|"
+                           r"curriculum)[^.@]{0,80}?\bto\b\s*:?\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", re.I)
+ERROR_TEXT = re.compile(r"(this field is|is) required|please (fill|enter|select|complete)|invalid (email|phone|value)|"
+                        r"missing entry|required field|can'?t be blank|cannot be blank|must be filled", re.I)
 APPLY_TEXT = re.compile(r"^\s*(apply|apply now|apply here|apply online|apply again|apply on (the )?(company|employer)('s)? "
                         r"(site|website|page)|apply externally|apply for (this|the)? ?(job|position|role|opening)|"
                         r"apply with resume|submit (your )?(resume|cv|application)|i'?m interested|send (your )?(resume|cv))\s*!?\s*$", re.I)
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+IDENTITY = re.compile(r"first ?name|last ?name|surname|family name|full ?name|your name|legal name|e-?mail|vorname|"
+                      r"nachname|prénom|prenom|apellido", re.I)
 # job boards' own addresses (support, alerts ...) are never where a company wants your resume
 BOARD_DOMAINS = re.compile(r"(^|\.)(naukri|linkedin|himalayas|remotive|remoteok|jobicy|weworkremotely|arbeitnow|"
                            r"indeed|glassdoor|google|example)\.[a-z.]+$", re.I)
@@ -58,6 +65,20 @@ SCAN_JS = r"""
   const vis = e => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length)) &&
                    getComputedStyle(e).visibility !== 'hidden';
   const clean = t => (t || '').replace(/\s+/g, ' ').trim();
+  // the field's own box (Ashby, Lever, Greenhouse ...): its heading is the question, a "required" class marks it
+  const entryOf = e => e.closest('.ashby-application-form-field-entry, [class*=field-entry], [class*=fieldEntry], ' +
+                                 '[class*=form-group], [class*=formGroup], [class*=form-field], [class*=FormField]');
+  const headingOf = e => {
+    const en = entryOf(e);
+    if (!en) return '';
+    const h = [...en.querySelectorAll('label, legend, [class*=question-title], [class*=questionTitle]')]
+      .find(x => !x.contains(e) && !x.querySelector('input, select, textarea') && clean(x.innerText));
+    if (!h) return '';
+    const d = en.querySelector('[class*=description]');
+    return clean(h.innerText + (d && !d.contains(e) ? ' ' + d.innerText : ''));
+  };
+  const markedRequired = e => { const en = entryOf(e); return !!(en && en.querySelector('[class*=required]')); };
+  const formOf = e => { const f = e.form || e.closest('form'); return f ? [...document.forms].indexOf(f) : -1; };
   const labelOf = e => {
     let t = '';
     if (e.labels && e.labels.length) t = [...e.labels].map(l => l.innerText).join(' ');
@@ -65,6 +86,7 @@ SCAN_JS = r"""
       t = e.getAttribute('aria-labelledby').split(' ').map(id => ((e.getRootNode().getElementById ? e.getRootNode() : document).getElementById(id) || {}).innerText || '').join(' ');
     if (!t) t = e.getAttribute('aria-label') || '';
     if (!t && e.closest('label')) t = e.closest('label').innerText;
+    if (!t) t = headingOf(e);
     if (!t) t = e.getAttribute('placeholder') || '';
     if (!t) {  // nearest preceding text in the same small container
       let p = e.parentElement;
@@ -92,19 +114,30 @@ SCAN_JS = r"""
     const combo = e.tagName === 'INPUT' && (e.readOnly || e.getAttribute('role') === 'combobox' ||
                                             e.getAttribute('aria-autocomplete') === 'list');
     if (e.readOnly && !combo) continue;
+    // invisible helper / anti-bot text boxes: fully transparent or unreachable with the keyboard (not file uploads,
+    // radios / checkboxes hidden behind styled labels, or <select>s under a styled box)
+    if (e.tagName !== 'SELECT' && type !== 'file' && !choice && (e.tabIndex < 0 || getComputedStyle(e).opacity === '0'))
+      continue;
     if (type === 'file' && e.disabled) continue;
+    if (type === 'file') {  // styled uploaders hide the input itself but show its box; one inside a hidden tab /
+      let hidden = false;    // step is not part of the form you can see (it made a job page look like a form)
+      for (let a = e.parentElement; a && a !== document.body && !hidden; a = a.parentElement)
+        hidden = getComputedStyle(a).display === 'none';
+      if (hidden) continue;
+    }
     e.setAttribute('data-nb-idx', String(idx));
-    const required = e.required || e.getAttribute('aria-required') === 'true';
+    const required = e.required || e.getAttribute('aria-required') === 'true' || markedRequired(e);
     const base = {idx, tag: e.tagName.toLowerCase(), type, name: e.name || e.id || '',
                   placeholder: e.getAttribute('placeholder') || '', required, accept: e.getAttribute('accept') || '',
                   maxlength: e.maxLength > 0 ? e.maxLength : 0, pattern: e.getAttribute('pattern') || '',
-                  autocomplete: e.getAttribute('autocomplete') || ''};
+                  autocomplete: e.getAttribute('autocomplete') || '', form: formOf(e)};
     if (type === 'radio' || type === 'checkbox') {
       const key = type + ':' + (e.name || ('_' + idx));
       const optLabel = clean((e.labels && e.labels[0] && e.labels[0].innerText) || (e.closest('label') || {}).innerText || e.value);
       if (!groups[key]) {
         const fs = e.closest('fieldset');
         let q = fs && fs.querySelector('legend') ? clean(fs.querySelector('legend').innerText) : '';
+        if (!q) q = headingOf(e);
         if (!q) {
           let p = e.parentElement;
           for (let i = 0; i < 5 && p; i++, p = p.parentElement) {
@@ -138,8 +171,8 @@ SCAN_JS = r"""
     e.setAttribute('data-nb-idx', String(idx));
     const lab = labelOf(e);
     out.push({idx, tag: 'div', type: 'combo', name: e.id || '', placeholder: '', label: lab,
-              required: /\*/.test(lab) || e.getAttribute('aria-required') === 'true', options: [],
-              value: clean(e.innerText)});
+              required: /\*/.test(lab) || e.getAttribute('aria-required') === 'true' || markedRequired(e), options: [],
+              value: clean(e.innerText), form: formOf(e)});
     idx++;
   }
   return out;
@@ -227,9 +260,11 @@ class FieldFiller:
     """Maps a form field's label to a value from the profile."""
 
     # where the job was found -> answer for "How did you hear about us?"
-    SOURCE_NAMES = {"naukri": "Naukri.com", "linkedin": "LinkedIn", "himalayas": "Himalayas", "remotive": "Remotive",
+    SOURCE_NAMES = {"naukri": "Naukri.com", "linkedin": "LinkedIn", "indeed": "Indeed", "himalayas": "Himalayas", "remotive": "Remotive",
                     "remoteok": "Remote OK", "jobicy": "Jobicy", "weworkremotely": "We Work Remotely",
-                    "arbeitnow": "Arbeitnow", "greenhouse": "Company website", "lever": "Company website",
+                    "arbeitnow": "Arbeitnow", "workingnomads": "Working Nomads", "themuse": "The Muse",
+                    "4dayweek": "4 Day Week", "landingjobs": "Landing.jobs", "arc": "Arc",
+                    "greenhouse": "Company website", "lever": "Company website",
                     "ashby": "Company website"}
 
     def __init__(self, cfg: Config, answerer: Answerer):
@@ -243,7 +278,7 @@ class FieldFiller:
         name = self.SOURCE_NAMES.get(self.source) or self.c.get("heard_about_us") or "Job board"
         if not options:
             return name
-        for want in (re.escape(name), r"linkedin" if self.source == "linkedin" else r"naukri",
+        for want in (re.escape(name), {"linkedin": r"linkedin", "indeed": r"indeed"}.get(self.source, r"naukri"),
                      r"job ?board|job ?portal|job ?site|online|internet|website|other"):
             hit = next((o for o in options if re.search(want, o, re.I)), None)
             if hit:
@@ -280,8 +315,8 @@ class FieldFiller:
         strong = [
             (r"first and last name|full ?name|your name|legal name|candidate name|applicant name", p.get("name")),
             (r"preferred (first )?name|nick ?name", first),
-            (r"first ?name|given name|\bfname\b", first),
-            (r"last ?name|surname|family name|\blname\b", last),
+            (r"first ?name|given name|\bfname\b|vorname|prénom|prenom|\bnombre\b|\bnome\b", first),
+            (r"last ?name|surname|family name|\blname\b|nachname|familienname|\bnom\b|apellidos?|cognome", last),
             (r"middle ?name", ""),
             (r"e-?mail", p.get("email")),
             (lambda: is_phone_question(label or field.get("placeholder") or ""), "__PHONE__"),
@@ -292,7 +327,7 @@ class FieldFiller:
         ]
         # field names - short labels only
         short_rules = [
-            (r"father|mother|guardian|spouse", None),
+            (r"father|mother|guardian|spouse|nominee|referee|reference|emergency|next of kin|manager's|supervisor", None),
             (DIAL_CODE_FIELD, "__DIAL__"),
             # "Phone: [+91 v] [__________]" - the code dropdown shares the number's label
             (lambda: field.get("tag") == "select" and is_phone_question(label) and any(
@@ -322,8 +357,16 @@ class FieldFiller:
             (r"graduation|pass(ing)? year|year of (passing|graduation)", p.get("graduation_year")),
         ]
         rules = (strong if textual else []) + (short_rules if short else [])
-        for pattern, value in rules:
-            if pattern() if callable(pattern) else re.search(pattern, text):
+        # the label decides first; placeholder / name only when the label matches nothing
+        # ("LinkedIn profile URL" with placeholder "linkedin.com/in/your-name" is not a name field)
+        label_text = re.sub(r"[_\-\[\]]+", " ", label.lower()).strip()
+        hit = None
+        for haystack in ((label_text, text) if label_text else (text,)):
+            hit = next(((pattern, value) for pattern, value in rules
+                        if (pattern() if callable(pattern) else re.search(pattern, haystack))), None)
+            if hit:
+                break
+        for pattern, value in [hit] if hit else []:
                 if value == "__PHONE__":
                     return self.phone_value(field)
                 if value == "__DIAL__":
@@ -431,6 +474,7 @@ class CompanyApplier:
         # role-specific resumes built by build_resumes.py (falls back to resume_pdf)
         self.resumes = ResumePicker(cfg.root, resume or None, cfg.data_dir / "upload")
         self.gforms = GoogleFormFlow(self)
+        self.smtp_rejected = False  # Gmail refused the login once: no more attempts this run
         self.debug_dir = cfg.data_dir / "company_debug"
         self.debug_dir.mkdir(exist_ok=True)
         self._pw = self.ctx = self.page = None
@@ -545,25 +589,52 @@ class CompanyApplier:
                 fields = fr.evaluate(SCAN_JS)
             except PWError:
                 continue
-            kinds = " ".join((f.get("label", "") + " " + f.get("name", "") + " " + f.get("type", "")).lower()
-                             for f in fields)
-            score = len(fields)
-            if "file" in kinds:
-                score += 5
-            if "mail" in kinds:
-                score += 3
-            if re.search(r"newsletter|subscribe", kinds) and len(fields) <= 2:
-                score = 0
-            # job boards' own "upload your CV to be discovered" / job-alert widgets are not applications
-            if re.search(r"be discovered|unlock remote|job alerts?|talent (pool|network|community)|"
-                         r"get (job|new) (alerts|jobs)|sign ?up|create (an )?account|log ?in", kinds):
-                score = 0
-            if score > best_score:
-                best, best_fields, best_score = fr, fields, score
-        is_form = best_score >= 5 and any(
-            f["type"] == "file" or re.search(r"mail", (f.get("label", "") + f.get("name", "")).lower())
-            for f in best_fields)
-        return (best, best_fields) if is_form else (None, [])
+            # a page can hold several forms (search, newsletter, "connect with us", the application):
+            # judge each <form> on its own; inputs outside any <form> (React pages) count as one
+            groups: dict[int, list[dict]] = {}
+            for f in fields:
+                groups.setdefault(f.get("form", -1), []).append(f)
+            for group in groups.values():
+                score = self._form_score(group)
+                if score > best_score:
+                    best, best_fields, best_score = fr, group, score
+        has_file = any(f["type"] == "file" for f in best_fields)
+        has_mail = any(re.search(r"mail", (f.get("label", "") + f.get("name", "")).lower()) for f in best_fields)
+        # an application takes your resume, or at least asks more than a name + email (job alerts,
+        # "email me this job" and newsletter boxes do not)
+        is_form = best_score >= 5 and (has_file or (has_mail and len(best_fields) >= 4))
+        if not is_form:
+            return None, []
+        # untag the other forms' fields, so Submit is looked for in the application form only
+        keep = sorted({i for f in best_fields for i in (f.get("optionIdx") or [f["idx"]])})
+        try:
+            best.evaluate("(keep) => document.querySelectorAll('[data-nb-idx]').forEach(e => {"
+                          " if (!keep.includes(+e.getAttribute('data-nb-idx'))) e.removeAttribute('data-nb-idx'); })",
+                          keep)
+        except PWError:
+            pass
+        return best, best_fields
+
+    @staticmethod
+    def _form_score(fields: list[dict]) -> int:
+        kinds = " ".join((f.get("label", "") + " " + f.get("name", "") + " " + f.get("type", "")).lower()
+                         for f in fields)
+        score = len(fields)
+        if "file" in kinds:
+            score += 5
+        if "mail" in kinds:
+            score += 3
+        if re.search(r"newsletter|subscribe", kinds) and len(fields) <= 2:
+            score = 0
+        # job boards' own "upload your CV to be discovered" / job-alert widgets are not applications
+        if re.search(r"be discovered|unlock remote|job alerts?|talent (pool|network|community)|"
+                     r"get (job|new) (alerts|jobs)|sign ?up|create (an )?account|log ?in", kinds):
+            score = 0
+        # "email this job to a friend" / share widgets are not applications
+        if re.search(r"recipient|friend|colleague|share (this|job)|(email|send|forward) (this|the|a) job|"
+                     r"refer (a|someone)", kinds):
+            score = 0
+        return score
 
     # ------------------------------------------------------------ routes
     def apply_job(self, job: dict) -> tuple[str, str]:
@@ -581,6 +652,8 @@ class CompanyApplier:
         ats = detect_ats(url)
         if needs_login(ats):
             return "manual", f"{ats} needs an account - apply manually"
+        if ats == "msforms":  # its questions are not labelled like normal forms - never guess answers there
+            return "manual", "Microsoft Form - fill it yourself (the bot can't read its questions reliably yet)"
         try:
             self.open(url)
         except PWError as e:
@@ -611,6 +684,10 @@ class CompanyApplier:
                 if frame:
                     break
             if frame:
+                ask = SEND_TO_EMAIL.search(self.body_text())
+                if ask and not any(f["type"] == "file" for f in fields):
+                    # "send your application to jobs@..." and the only form takes no CV (a contact form)
+                    return self.send_email(ask.group(5), job)
                 return self.fill_and_submit(frame, fields, job)
             route = self.click_apply(title)
             if route is None:
@@ -688,6 +765,9 @@ class CompanyApplier:
             if self.assist_seconds:
                 return self.wait_for_user(job)
             before, url_before = self.body_text(), self.page.url
+            required = [(f.get("label") or f.get("placeholder") or f.get("name") or "")[:80]
+                        for f in fields if f.get("required")]
+            empty_before = set(self.still_missing(frame, fields, required))
             clicked = self.click_submit(frame)
             if not clicked:
                 return "manual", "submit button not found"
@@ -710,10 +790,32 @@ class CompanyApplier:
             if frame2 and new_names and clicked == "next":
                 frame, fields = frame2, fields2
                 continue
-            errors = ERROR_TEXT.findall(text)
+            # error messages that appeared with this click (not instructions that were on the page already)
+            errors = [m.group(0) for m in ERROR_TEXT.finditer(text)][len(ERROR_TEXT.findall(before)):]
+            try:  # fields the page flags as invalid / still-empty required ones: the form was NOT sent
+                errors += ["invalid field"] * frame.evaluate(
+                    "() => document.querySelectorAll('[aria-invalid=true]').length")
+            except PWError:
+                pass
+            try:  # only while the form is still on screen (after a real submit its fields are gone, not "empty")
+                form_there = frame.locator("[data-nb-idx]").count() > 0
+            except PWError:
+                form_there = False
+            cleared = False
+            if form_there:
+                empty_after = set(self.still_missing(frame, fields, required))
+                filled_before = set(required) - empty_before
+                # every answer we typed is gone: the page reset the form after sending it (a retry would
+                # apply twice) - only answers that are still missing mean it was NOT sent
+                cleared = bool(filled_before) and filled_before <= empty_after
+                if not cleared:
+                    errors += [f"empty: {m}" for m in sorted(empty_after)]
             shot = self.snapshot(f"unclear_{job['job_id']}")
+            if cleared and not errors:
+                return "unconfirmed", f"form was cleared after Submit (probably sent). screenshot: {shot}"
             if errors:
-                return "failed", f"form shows errors ({len(errors)}). screenshot: {shot}"
+                return "failed", f"form not sent - {len(errors)} problem(s): {'; '.join(errors[:3])[:160]}. " \
+                                 f"screenshot: {shot}"
             return "unconfirmed", f"submitted but no confirmation seen. screenshot: {shot}"
         return "manual", "form has too many steps"
 
@@ -766,17 +868,25 @@ class CompanyApplier:
         missing = []
         # the calling code has its own dropdown (LinkedIn "Phone country code"): type the number without it
         self.filler.separate_country_code = any(
-            DIAL_CODE_FIELD.search(f"{f.get('label') or ''} {f.get('name') or ''}") for f in fields)
-        for f in fields:
+            DIAL_CODE_FIELD.search(f"{f.get('label') or ''} {f.get('name') or ''}") or
+            (f.get("tag") == "select" and sum(bool(re.search(r"\+\s?\d", o)) for o in f.get("options") or []) >= 3)
+            for f in fields)
+        # files first: many sites read the uploaded resume and refill the form ("autofill") - your profile
+        # values typed afterwards are the ones that stay
+        uploaded = False
+        for f in sorted(fields, key=lambda g: g["type"] != "file"):
+            if uploaded and f["type"] != "file":
+                frame.page.wait_for_timeout(3000)  # let the site's resume autofill finish
+                uploaded = False
             label = (f.get("label") or f.get("placeholder") or f.get("name") or "")[:80]
             try:
                 if not self._retag(frame, fields, f, root):
                     continue
                 if f["type"] == "file":
                     text = (label + " " + f.get("name", "")).lower()
-                    if re.search(r"cover|photo|picture|image|avatar|autofill|auto-fill|parse", text) and \
-                            not re.search(r"^(resume|cv)\b", text):
-                        if f["required"] and "autofill" not in text:
+                    if not self.resume_upload(text):
+                        # another document (cover letter, photo, screenshot, certificate ...): never your resume
+                        if f["required"] and not re.search(r"autofill|auto-fill|parse", text):
                             missing.append(label or "file")
                         continue
                     if not (self.resume and self.resume.exists()):
@@ -789,6 +899,7 @@ class CompanyApplier:
                         continue
                     frame.locator(f"[data-nb-idx='{f['idx']}']").set_input_files(str(self.resume))
                     log.info("   upload resume (%s) -> %s", self.resume.parent.name, label or f.get("name"))
+                    uploaded = True
                     continue
                 if f["type"] in ("radio", "checkbox"):
                     self._fill_choice(frame, f, missing)
@@ -796,8 +907,8 @@ class CompanyApplier:
                 if f["type"] == "combo":
                     self._fill_combo(frame, f, title, company, missing)
                     continue
-                if f.get("value") and f["tag"] != "select":
-                    continue  # prefilled
+                if f.get("value") and f["tag"] != "select" and not (IDENTITY.search(label) or is_phone_question(label)):
+                    continue  # prefilled (but a resume parser's guess never beats your profile's name / email / phone)
                 value = self.filler.value_for(f, title, company)
                 if value in (None, ""):
                     if f["required"]:
@@ -827,6 +938,21 @@ class CompanyApplier:
                 if f["required"]:
                     missing.append(label)
         return missing
+
+    GENERIC_FILE_WORDS = {"upload", "attach", "attachment", "attachments", "file", "files", "document", "documents",
+                          "choose", "browse", "drop", "drag", "here", "your", "a", "an", "the", "or", "and", "click",
+                          "to", "select", "max", "mb", "kb", "pdf", "doc", "docx", "only", "required", "optional",
+                          "input", "field", "name", "id", "no", "chosen", "datei", "hinzuf", "gen", "dateien",
+                          "hochladen", "ajouter", "fichier", "subir", "archivo", "adjuntar"}
+
+    @classmethod
+    def resume_upload(cls, text: str) -> bool:
+        """A file box for your resume: it says resume / CV, or nothing more than 'upload a file'."""
+        if re.search(r"autofill|auto-fill|parse|cover ?letter", text):
+            return False
+        if re.search(r"resume|\bcv\b|curr[ií]cul|bio-?data|lebenslauf|\bcurriculo\b", text):
+            return True
+        return not (set(re.findall(r"[a-z]+", text)) - cls.GENERIC_FILE_WORDS)
 
     @staticmethod
     def _retag(frame: Frame, fields: list[dict], f: dict, root: str | None) -> bool:
@@ -976,14 +1102,33 @@ class CompanyApplier:
     def _fill_choice(self, frame: Frame, f: dict, missing: list[str]):
         label, options = f.get("label", ""), f.get("options") or []
         if f["type"] == "checkbox" and len(options) == 1:
-            text = (label + " " + options[0]).lower()
-            if re.search(r"agree|consent|terms|privacy|accept|authori[sz]e|confirm|declare|acknowledge", text):
-                self._check(frame.locator(f"[data-nb-idx='{f['optionIdx'][0]}']"))
-                log.info("   [x] %s", options[0][:60])
+            own = options[0].strip()
+            # Ashby-style Yes/No toggles are one checkbox without a label of its own ("on"): the question is the label
+            text = label if own.lower() in ("", "on", "yes", "true", "1", "y") else own
+            box = frame.locator(f"[data-nb-idx='{f['optionIdx'][0]}']")
+            if re.search(r"\?\s*\**\s*$", text) or re.match(r"(are|do|does|did|have|has|will|would|can|could|is|should)\b",
+                                                         text.strip().lower()):
+                # a question: tick only when the honest answer is Yes ("authorized to work in the US?" is not)
+                answer = self.answerer.answer(text, ["Yes", "No"])
+                if answer == "Yes":
+                    self._check(box)
+                    log.info("   %s -> Yes", text[:60])
+                elif f["required"]:
+                    missing.append(text[:80])
+                return
+            if re.search(r"agree|consent|terms|privacy|accept|authori[sz]e|confirm|declare|acknowledge|certify|"
+                         r"have read|datenschutz|einwillig|zur kenntnis|akzeptier|j'accepte|confidentialit|acepto|"
+                         r"privacidad", text.lower()):
+                self._check(box)
+                log.info("   [x] %s", text[:60])
             elif f["required"]:
                 missing.append(label[:80])
             return
-        choice = self.answerer.answer(label, options)
+        if re.search(r"how did you (hear|find|come|learn)|where did you (hear|find|see)|referr?al source|^source\b",
+                     label, re.I):
+            choice = self.filler.heard_about(options)  # "Social media (LinkedIn ...)" / "Job board"
+        else:
+            choice = self.answerer.answer(label, options)
         if choice is None:
             if f["required"]:
                 missing.append(label[:80])
@@ -993,11 +1138,14 @@ class CompanyApplier:
         log.info("   %s -> %s", label[:50], choice)
 
     def click_submit(self, frame: Frame) -> str | None:
-        """Click submit (or Next on multi-step forms). Returns 'submit', 'next' or None."""
-        for kind, pattern in (("submit", r"^\s*(submit|apply|apply now|send|send application|submit application|"
-                                          r"apply for this (job|position)|finish|complete)\s*$"),
-                              ("next", r"^\s*(next|continue|save (and|&) continue|proceed)\s*$")):
-            loc = frame.locator("button, input[type=submit], input[type=button], [role=button], a.btn, a.button")
+        """Click submit (or Next on multi-step forms). Returns 'submit', 'next' or None.
+        Buttons of the <form> being filled come first: a page-level "Apply" tab must not win over its "Send"."""
+        buttons = ("button", "input[type=submit]", "input[type=button]", "[role=button]", "a.btn", "a.button")
+        for scope, (kind, pattern) in [(scope, rule) for scope in ("form:has([data-nb-idx]) ", "") for rule in (
+                ("submit", r"^\s*(submit|apply|apply now|send|send application|submit application|"
+                           r"apply for this (job|position)|finish|complete)\s*$"),
+                ("next", r"^\s*(next|continue|save (and|&) continue|proceed)\s*$"))]:
+            loc = frame.locator(", ".join(scope + b for b in buttons))
             for i in range(min(loc.count(), 60)):
                 el = loc.nth(i)
                 try:
@@ -1006,16 +1154,26 @@ class CompanyApplier:
                         txt = el.get_attribute("value") or ""
                     if re.match(pattern, txt, re.I) and el.is_visible() and el.is_enabled():
                         el.scroll_into_view_if_needed()
-                        el.click()
+                        self._click(el)
                         log.info("   clicked '%s'", txt)
                         return kind
                 except PWError:
                     continue
         sub = frame.locator("button[type=submit], input[type=submit]")
         if sub.count() and sub.first.is_visible():
-            sub.first.click()
+            self._click(sub.first)
             return "submit"
         return None
+
+    @staticmethod
+    def _click(el):
+        """Click; when a cookie banner / sticky footer covers the (enabled) button, click it through the page."""
+        try:
+            el.click(timeout=5000)
+        except PWError:
+            if not el.is_enabled():
+                raise
+            el.evaluate("e => e.click()")
 
     def wait_for_user(self, job: dict) -> tuple[str, str]:
         log.info("   ASSIST: check the form in the browser and submit it yourself (waiting %ss)...", self.assist_seconds)
@@ -1042,10 +1200,18 @@ class CompanyApplier:
             return "filled", f"would email resume to {to} (--no-submit)"
         msg = build_email(self.cfg, to, job, self.filler.cover_letter(job.get("title", ""), job.get("company", "")),
                           self.resume)
+        if self.smtp_rejected:
+            return "failed", f"email to {to} not sent: Gmail rejected SMTP_APP_PASSWORD earlier in this run"
         try:
             with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
                 s.login(self.cfg.smtp_email, self.cfg.smtp_password)
                 s.send_message(msg)
+        except smtplib.SMTPAuthenticationError as e:
+            # repeated bad logins can get the Gmail account locked: stop trying for this run
+            self.smtp_rejected = True
+            log.error("Gmail rejected SMTP_EMAIL / SMTP_APP_PASSWORD - no more emails this run. Create a new App "
+                      "Password (Google Account > Security > 2-Step Verification > App passwords) and put it in .env")
+            return "failed", f"email to {to} not sent: Gmail rejected the login ({e.smtp_code})"
         except (smtplib.SMTPException, OSError) as e:
             return "failed", f"email to {to} failed: {e}"
         return "applied", f"emailed resume to {to}"

@@ -1,7 +1,8 @@
-# Naukri Auto Apply Bot
+# Job Auto Apply Bot
 
-Searches Naukri for jobs, filters them against your resume, and applies automatically.
-It also answers the recruiter chatbot questions.
+Finds jobs on **Naukri, LinkedIn, Indeed** and **11 remote job boards**, filters them against your resume, and applies
+automatically: Naukri's chatbot, LinkedIn Easy Apply, Indeed Apply, company career sites, Google Forms, and email
+(when a posting asks you to mail your resume). Every application ends up in one file, `data/applied_companies.csv`.
 
 > **This is a generic tool — you need to add your own resume and fill in your personal details before using it.**
 
@@ -99,16 +100,29 @@ Edit the following sections in `config.yaml` or override them in `.env`:
 
 ## Usage
 
+Double-click **`run_bot.bat`** (or run `python main.py`) to run everything, one step after the other:
+
+1. **Naukri** - apply through Naukri's chatbot (daily cap `MAX_APPLIES_PER_DAY`)
+2. **LinkedIn** - Easy Apply; other jobs are queued for step 5
+3. **Indeed** - Indeed Apply; "apply on company site" jobs are queued for step 5
+4. **Remote job boards** - collect new jobs from 11 boards (below)
+5. **Company sites** - every queued job: career-site forms, Google Forms, and emailing your resume when the posting asks for it
+
+A step that fails (login, a site change...) is logged and the next one still runs. At the end everything sent is in
+`data/applied_companies.csv`, and the jobs you have to finish yourself are in `data/manual_apply.html`.
+
 | Command | What it does |
 |---|---|
-| `python main.py --dry-run` | Search and filter only. Lists the jobs it would apply to. |
-| `python main.py` | Log in and apply (up to `max_applies_per_run`, default 25) |
-| `python main.py --max 5` | Apply to at most 5 jobs |
-| `python main.py --job-url <url>` | Apply to one specific job |
-| `python main.py --report` | Export `data/applied_jobs.csv` and list questions the bot could not answer |
-| `python main.py --headless` | Run without showing the browser window |
+| `python main.py all --dry-run` | Everything in preview mode. Nothing is submitted, no resume is uploaded. |
+| `python main.py all --skip indeed,naukri` | Leave some steps out |
+| `python main.py naukri --dry-run` | Naukri: search and filter only. Lists the jobs it would apply to. |
+| `python main.py naukri --max 5` | Naukri: apply to at most 5 jobs |
+| `python main.py naukri --job-url <url>` | Naukri: apply to one specific job |
+| `python main.py report` | All reports: per-site CSVs, unanswered questions, `applied_companies.csv` |
+| `--headless` (any command) | Run without showing the browser window |
 
-You can also double-click `run_bot.bat`.
+**Before the first full run, log in once** to each site in the browser window it opens (the session is saved):
+`python main.py naukri --login`, `python main.py linkedin --login`, `python main.py indeed --login`.
 
 ## How it works
 
@@ -186,10 +200,32 @@ Add your LinkedIn login to `.env` (`LINKEDIN_EMAIL`, `LINKEDIN_PASSWORD`). All s
 - The Easy Apply dialog is filled with the same answer engine, and your resume already saved on LinkedIn is reused.
 - An application counts only when LinkedIn shows "application was sent". If Submit was clicked but no confirmation appeared, the job is marked `unconfirmed`. That still counts toward the limit and is never retried.
 - Keep `LINKEDIN_MAX_APPLIES` low (about 15). LinkedIn restricts accounts that apply too fast.
+- LinkedIn's newer Easy Apply button ignores automated clicks, so the bot opens each job's apply page directly
+  (`/jobs/view/<id>/apply/`). Jobs that failed with an error are retried on the next run.
+
+## Indeed (`python main.py indeed`)
+
+| Command | What it does |
+|---|---|
+| `python main.py indeed --login` | Log in once. Indeed usually emails a sign-in code: type it in the browser, or set `INDEED_EMAIL` to the same Gmail as `SMTP_EMAIL` and the bot reads the code itself. |
+| `python main.py indeed --dry-run --max 3` | Fill the Indeed Apply steps, never submit |
+| `python main.py indeed --max 5` | Apply to at most 5 jobs (default `INDEED_MAX_APPLIES`, daily cap `INDEED_MAX_APPLIES_PER_DAY`) |
+| `python main.py indeed --report` | Export `data/indeed_jobs.csv` |
+
+- Searches every site in `INDEED_DOMAINS`. Your own country's site (in.indeed.com) is searched in `INDEED_LOCATIONS`
+  (`Remote`, `Anywhere` or city names); the other countries for **remote jobs only**, because on-site jobs abroad
+  need a local work permit.
+- Same title / experience / skill filters as the other bots. Jobs abroad that require local work rights are skipped.
+- Indeed Apply steps are filled with the same answer engine. The resume already chosen on your Indeed account is kept;
+  "Relevant experience" gets your `current_designation` and `current_company`.
+- "Apply on company site" jobs are queued for the company-site step.
+- If Indeed shows a bot check, the bot waits for you to solve it in the browser; if nobody does, it stops the Indeed step.
 
 ## Foreign / remote job boards (`foreign_jobs.py`)
 
-Collects remote jobs from **Remotive, RemoteOK, WeWorkRemotely, Jobicy, Arbeitnow and Himalayas** (6 sources), then applies using the company-site bot.
+Collects remote jobs from **Remotive, RemoteOK, We Work Remotely, Jobicy, Arbeitnow, Himalayas, Working Nomads,
+The Muse, 4 Day Week, Landing.jobs and Arc.dev** (11 sources), then applies using the company-site bot.
+Arc.dev and Landing.jobs need their own account to apply, so their jobs go on the manual list with a direct link.
 
 | Command | What it does |
 |---|---|
@@ -261,8 +297,9 @@ For skill checklists it ticks only the skills that are in your `skills`. Forms t
 | `config.example.yaml` | Template config — copy to `config.yaml` and fill in your details |
 | `config.yaml` | Your personal config (gitignored, never pushed) |
 | `.env.example` | Template for `.env` |
-| `.env` | Your Naukri login & SMTP credentials (gitignored, never pushed) |
-| `main.py` | Naukri bot entry point |
+| `.env` | Your logins, SMTP credentials and search settings (gitignored, never pushed) |
+| `main.py` | Entry point for every bot (`python main.py` runs them all) |
+| `data/applied_companies.csv` | Every application sent, from every bot, in one file |
 | `company_apply.py` | Company-site apply bot |
 | `linkedin_apply.py` | LinkedIn Easy Apply bot |
 | `foreign_jobs.py` | Foreign remote job collector + applier |
